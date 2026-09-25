@@ -1,0 +1,10 @@
+{
+  "environments": {
+  {{- range $i, $env := .environments }}
+    "{{ $env }}": {
+      "replicas": {{ if eq $env "prod" }}3{{ else }}1{{ end }},
+      "memory": "{{ if eq $env "prod" }}2Gi{{ else }}512Mi{{ end }}"
+    }{{ if lt (add1 $i) (len $.environments) }},{{ end }}
+  {{- end }}
+  }
+}
