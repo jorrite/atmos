@@ -1242,7 +1242,8 @@ func validateScaffoldFile(scaffoldPath string) error {
 	// the manifest envelope: apiVersion, kind, metadata) and the Go-level
 	// backstop checks generate itself relies on (field definitions, matrix
 	// axis values).
-	if _, err := config.LoadScaffoldConfigFromContent(string(scaffoldData), config.WithSourceDir(filepath.Dir(scaffoldPath))); err != nil {
+	scaffoldConfig, err := config.LoadScaffoldConfigFromContent(string(scaffoldData), config.WithSourceDir(filepath.Dir(scaffoldPath)))
+	if err != nil {
 		return errUtils.Build(errUtils.ErrScaffoldValidation).
 			WithCause(err).
 			WithExplanationf("Invalid scaffold manifest: `%s`", scaffoldPath).
@@ -1252,6 +1253,37 @@ func validateScaffoldFile(scaffoldPath string) error {
 			Err()
 	}
 
+	if err := validateScaffoldComputedTemplateSources(scaffoldConfig, scaffoldPath); err != nil {
+		return errUtils.Build(errUtils.ErrScaffoldValidation).
+			WithCause(err).
+			WithExplanationf("Invalid scaffold manifest: `%s`", scaffoldPath).
+			WithContext("path", scaffoldPath).
+			WithExitCode(2).
+			Err()
+	}
+
+	return nil
+}
+
+// validateScaffoldComputedTemplateSources fetches and parses every
+// type: computed field's template.source (local or remote, mirroring
+// !include's own resolve-before-answers-exist timing) without executing it
+// against real args, so a missing file, an unreachable remote source, or
+// invalid template syntax fails atmos scaffold validate too, not just
+// generate -- see engine.Processor.ValidateTemplateSource.
+func validateScaffoldComputedTemplateSources(scaffoldConfig *config.ScaffoldConfig, scaffoldPath string) error {
+	processor := engine.NewProcessor()
+	processor.SetSourceDir(filepath.Dir(scaffoldPath))
+
+	for i := range scaffoldConfig.Spec.Fields {
+		field := &scaffoldConfig.Spec.Fields[i]
+		if field.Template == nil {
+			continue
+		}
+		if err := processor.ValidateTemplateSource(field.Template.Source); err != nil {
+			return fmt.Errorf("computed field %q: %w", field.Name, err)
+		}
+	}
 	return nil
 }
 
