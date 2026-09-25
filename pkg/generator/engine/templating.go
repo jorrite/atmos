@@ -13,6 +13,7 @@ import (
 	"github.com/hairyhenderson/gomplate/v3/data"
 
 	errUtils "github.com/cloudposse/atmos/errors"
+	"github.com/cloudposse/atmos/pkg/downloader"
 	"github.com/cloudposse/atmos/pkg/filesystem"
 	"github.com/cloudposse/atmos/pkg/generator/merge"
 	"github.com/cloudposse/atmos/pkg/generator/storage"
@@ -97,6 +98,28 @@ type Processor struct {
 	baseStorage baseContentLoader
 	targetPath  string // Target directory for file generation
 	DryRun      bool   // When true, compute rendering/merge but skip writing to disk
+
+	// sourceDir and fileDownloader back RenderExternalTemplate (see
+	// external_template.go): sourceDir anchors a local Template.Source's
+	// relative-path resolution, set via SetSourceDir; fileDownloader is
+	// lazily constructed on first remote fetch (or injected directly by a
+	// same-package test). templateConsumedPaths accumulates every local
+	// Template.Source RenderExternalTemplate has read, exposed via
+	// TemplateConsumedPaths so a caller can exclude those files from
+	// generated output the same way config.WithIncludedPaths' consumed
+	// paths already are.
+	sourceDir             string
+	fileDownloader        downloader.FileDownloader
+	templateConsumedPaths []string
+}
+
+// TemplateConsumedPaths returns every local Template.Source path
+// RenderExternalTemplate has read so far (see external_template.go's
+// fetchTemplateSource), for excluding those files from generation output.
+func (p *Processor) TemplateConsumedPaths() []string {
+	defer perf.Track(nil, "engine.Processor.TemplateConsumedPaths")()
+
+	return p.templateConsumedPaths
 }
 
 // NewProcessor creates a new template processor with default settings.

@@ -14,25 +14,37 @@ import (
 // number, list, or map). Supplied by
 // engine.Processor.RenderAnswersExpression; duplicated here rather than
 // importing pkg/generator/engine, for the same import-cycle reason
-// FieldOptionsRenderer is (see its own doc comment).
+// FieldOptionsRenderer is (see its own doc comment). Also used to resolve
+// a Template.Args entry's delimited-expression form -- see resolveTemplateArg.
 type ComputedFieldRenderer func(expr string, answers map[string]interface{}, delimiters []string) (any, error)
 
-// ComputeFields evaluates every type: computed field's Value, in the order
-// fields are declared in spec.fields, and writes each result into values
-// under the field's own name. Value is either a template-expression string
-// containing a template action under delimiters (rendered via render,
-// resolved against answers -- see containsTemplateAction) or a literal:
-// either a non-string (number, bool, list, map) or a plain string with no
-// template action in it at all, stored as-is with no rendering. A computed
-// field may reference any regular field's answer (all of those are already
-// collected by the time ComputeFields runs, whether prompted, --set, or
-// defaulted) and any earlier-declared computed field's own result -- a
-// later computed field sees it in values because each result is written
-// back before the next field is evaluated. A field whose When evaluates
-// false against the values collected so far is skipped entirely (left
-// unset, deleting any stale value a persisted record already carried for
-// it), matching how a hidden regular field is never prompted for either.
-func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}, render ComputedFieldRenderer) error {
+// ComputedTemplateRenderer fetches Template.Source (local or remote, same
+// forms !include accepts), renders it as an ordinary Go template against
+// args with fixed default delimiters, and decodes the output by Source's
+// file extension. Supplied by engine.Processor.RenderExternalTemplate;
+// duplicated here rather than importing pkg/generator/engine, for the same
+// import-cycle reason ComputedFieldRenderer is.
+type ComputedTemplateRenderer func(source string, args map[string]interface{}) (any, error)
+
+// ComputeFields evaluates every type: computed field's Value or Template,
+// in the order fields are declared in spec.fields, and writes each result
+// into values under the field's own name. Value is either a
+// template-expression string containing a template action under delimiters
+// (rendered via render, resolved against answers -- see
+// containsTemplateAction) or a literal: either a non-string (number, bool,
+// list, map) or a plain string with no template action in it at all,
+// stored as-is with no rendering. Template renders an external file with
+// args resolved via the same bare-path-or-expression dispatch options:
+// uses (see resolveTemplateArg), via renderTemplate. A computed field may
+// reference any regular field's answer (all of those are already collected
+// by the time ComputeFields runs, whether prompted, --set, or defaulted)
+// and any earlier-declared computed field's own result -- a later computed
+// field sees it in values because each result is written back before the
+// next field is evaluated. A field whose When evaluates false against the
+// values collected so far is skipped entirely (left unset, deleting any
+// stale value a persisted record already carried for it), matching how a
+// hidden regular field is never prompted for either.
+func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}, render ComputedFieldRenderer, renderTemplate ComputedTemplateRenderer) error {
 	defer perf.Track(nil, "config.ComputeFields")()
 
 	delimiters := defaultDelimiters(scaffoldConfig.Spec.Delimiters)
@@ -50,6 +62,15 @@ func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}
 			// true. Leaving it in place would let a since-invalidated
 			// computed value keep reaching template rendering.
 			delete(values, field.Name)
+			continue
+		}
+
+		if field.Template != nil {
+			value, err := computeTemplateField(field, values, render, renderTemplate, delimiters)
+			if err != nil {
+				return err
+			}
+			values[field.Name] = value
 			continue
 		}
 
@@ -94,6 +115,75 @@ func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}
 // at all, not what render accepts once it is.
 func containsTemplateAction(expr string, delimiters []string) bool {
 	return strings.Contains(expr, delimiters[0]) && strings.Contains(expr, delimiters[1])
+}
+
+// computeTemplateField resolves one field.Template's Args (each via
+// resolveTemplateArg) and renders field.Template.Source against them via
+// renderTemplate.
+func computeTemplateField(
+	field *FieldDefinition, values map[string]interface{}, render ComputedFieldRenderer, renderTemplate ComputedTemplateRenderer, delimiters []string,
+) (any, error) {
+	if renderTemplate == nil {
+		return nil, errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+			WithExplanationf("Field %q is `type: computed` with `template:` but no template renderer is available", field.Name).
+			WithHint("This is an Atmos bug: ComputeFields was called without a ComputedTemplateRenderer").
+			WithContext("field_name", field.Name).
+			WithExitCode(2).
+			Err()
+	}
+
+	args := make(map[string]interface{}, len(field.Template.Args))
+	for name, expr := range field.Template.Args {
+		value, err := resolveTemplateArg(expr, values, render, delimiters)
+		if err != nil {
+			return nil, fmt.Errorf("computed field %q: template.args[%q]: %w", field.Name, name, err)
+		}
+		args[name] = value
+	}
+
+	value, err := renderTemplate(field.Template.Source, args)
+	if err != nil {
+		return nil, fmt.Errorf("computed field %q: %w", field.Name, err)
+	}
+	return value, nil
+}
+
+// resolveTemplateArg resolves one Template.Args entry using the same
+// bare-path-vs-delimited-expression dispatch resolveFieldOptions uses for
+// options: (validation.go): a string containing the configured left
+// delimiter is a Go-template expression, rendered via render; otherwise
+// it's an "answers.<path>" dot-path, walked directly against values (no
+// renderer needed, mirroring resolveFieldOptionsFromAnswers's own
+// dot-path walk).
+func resolveTemplateArg(expr string, values map[string]interface{}, render ComputedFieldRenderer, delimiters []string) (any, error) {
+	if strings.Contains(expr, delimiters[0]) {
+		if render == nil {
+			return nil, errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+				WithExplanationf("template.args value %q is a template expression, but no renderer is available", expr).
+				WithHint("This is an Atmos bug: ComputeFields was called without a ComputedFieldRenderer").
+				Err()
+		}
+		return render(expr, values, delimiters)
+	}
+
+	path, ok := strings.CutPrefix(expr, answersPrefix)
+	if !ok {
+		return nil, fmt.Errorf("%w: template.args value %q does not start with %q", errFieldOptionsSourceInvalid, expr, answersPrefix)
+	}
+
+	var current interface{} = values
+	for _, segment := range strings.Split(path, ".") {
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%w: template.args value %q: %q is not a map", errFieldOptionsSourceNotFound, expr, segment)
+		}
+		value, exists := m[segment]
+		if !exists {
+			return nil, fmt.Errorf("%w: template.args value %q", errFieldOptionsSourceNotFound, expr)
+		}
+		current = value
+	}
+	return current, nil
 }
 
 // valueReferencesAnswer reports whether a computed field's Value expression
@@ -167,23 +257,26 @@ func validateComputedFieldOrdering(fields []FieldDefinition) error {
 		if err := rejectComputedFieldWhenOrdering(fields, i); err != nil {
 			return err
 		}
-		expr, isExpression := field.Value.(string)
-		if !isExpression {
-			// A literal value has no expression to scan for a self/
-			// forward-reference -- nothing to validate.
+
+		exprs := computedFieldExpressions(field)
+		if len(exprs) == 0 {
+			// A literal value (or a template: with no args) has no
+			// expression to scan for a self/forward-reference -- nothing
+			// to validate.
 			continue
 		}
+
 		for j := i; j < len(fields); j++ {
 			later := &fields[j]
 			if later.Type != fieldTypeComputed {
 				continue
 			}
-			if !valueReferencesAnswer(expr, later.Name) {
+			if !referencesAny(exprs, later.Name) {
 				continue
 			}
 			if j == i {
 				return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
-					WithExplanationf("Field %q references itself in its own `value:` expression", field.Name).
+					WithExplanationf("Field %q references itself in its own `value:`/`template.args:`", field.Name).
 					WithHint("A computed field can't reference its own not-yet-computed value; remove the self-reference").
 					WithContext("field_name", field.Name).
 					WithExitCode(2).
@@ -204,12 +297,12 @@ func validateComputedFieldOrdering(fields []FieldDefinition) error {
 // rejectComputedFieldWhenOrdering rejects a computed field's own When
 // condition referencing itself or a computed field declared after it --
 // the same self/forward-reference rule validateComputedFieldOrdering
-// already enforces for Value, applied to When instead. ComputeFields
-// evaluates a computed field's own When before its Value, so a self/
-// forward reference here hits the same missing-value problem, but worse:
-// Condition.Evaluate collapses any evaluation error (e.g. a CEL map access
-// to a not-yet-populated key) to false, so the field is silently omitted
-// rather than erroring at all.
+// already enforces for Value/Template.Args, applied to When instead.
+// ComputeFields evaluates a computed field's own When before its Value, so
+// a self/forward reference here hits the same missing-value problem, but
+// worse: Condition.Evaluate collapses any evaluation error (e.g. a CEL map
+// access to a not-yet-populated key) to false, so the field is silently
+// omitted rather than erroring at all.
 func rejectComputedFieldWhenOrdering(fields []FieldDefinition, i int) error {
 	field := &fields[i]
 	for j := i; j < len(fields); j++ {
@@ -234,6 +327,34 @@ func rejectComputedFieldWhenOrdering(fields []FieldDefinition, i int) error {
 			Err()
 	}
 	return nil
+}
+
+// computedFieldExpressions collects every expression string that might
+// reference another computed field's name: field.Value when it's a string
+// (a literal has nothing to scan), plus every field.Template.Args value
+// when field.Template is set.
+func computedFieldExpressions(field *FieldDefinition) []string {
+	var exprs []string
+	if expr, isExpression := field.Value.(string); isExpression {
+		exprs = append(exprs, expr)
+	}
+	if field.Template != nil {
+		for _, expr := range field.Template.Args {
+			exprs = append(exprs, expr)
+		}
+	}
+	return exprs
+}
+
+// referencesAny reports whether any of exprs textually references
+// answers.<name> -- see valueReferencesAnswer.
+func referencesAny(exprs []string, name string) bool {
+	for _, expr := range exprs {
+		if valueReferencesAnswer(expr, name) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateOptionsNotComputed statically rejects a select/multiselect

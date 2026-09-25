@@ -80,7 +80,7 @@ spec:
 	require.NoError(t, err)
 
 	values := map[string]interface{}{}
-	require.NoError(t, ComputeFields(scaffoldConfig, values, nil))
+	require.NoError(t, ComputeFields(scaffoldConfig, values, nil, nil))
 	assert.Equal(t, map[string]interface{}{
 		"MIT":        map[string]interface{}{"url": "https://opensource.org/licenses/MIT"},
 		"Apache-2.0": map[string]interface{}{"url": "https://www.apache.org/licenses/LICENSE-2.0"},
@@ -217,6 +217,6 @@ spec:
 	require.NoError(t, err)
 
 	values := map[string]interface{}{}
-	require.NoError(t, ComputeFields(scaffoldConfig, values, nil))
+	require.NoError(t, ComputeFields(scaffoldConfig, values, nil, nil))
 	assert.Equal(t, map[string]interface{}{"MIT": map[string]interface{}{}, "Apache-2.0": map[string]interface{}{}}, values["license_lookup"])
 }

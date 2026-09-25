@@ -92,6 +92,27 @@
                 "description": "Whether a value must be provided (not valid on a computed field)",
                 "type": "boolean"
               },
+              "template": {
+                "additionalProperties": false,
+                "description": "Renders an external template file with args to compute this field's value (only valid when type: computed; exactly one of value/template required)",
+                "properties": {
+                  "args": {
+                    "additionalProperties": {
+                      "type": "string"
+                    },
+                    "description": "Each value is an answers.-prefixed dot-path or a delimited template expression -- the same dispatch options: uses",
+                    "type": "object"
+                  },
+                  "source": {
+                    "description": "Local path or git::/oci://https:// remote reference -- same forms !include accepts",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "source"
+                ],
+                "type": "object"
+              },
               "type": {
                 "description": "Prompt type",
                 "enum": [
