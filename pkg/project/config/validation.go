@@ -174,14 +174,15 @@ func validateFieldDefinitions(scaffoldConfig *ScaffoldConfig) error {
 }
 
 // validateComputedFieldDefinition statically validates a `type: computed`
-// field's shape at scaffold-load time: it must declare a non-nil `value:`
-// (a template expression string, or a literal of any other type) and must
-// not declare `required:` (meaningless for a field that's always
-// self-supplied, never prompted or --set) or `default:` (redundant with
-// `value:`, and ambiguous about which wins). Conversely, a non-computed
-// field must not declare `value:` -- it's silently ignored by every other
-// field type today, which would be confusing rather than an error surfaced
-// only much later.
+// field's shape at scaffold-load time: it must declare exactly one of
+// `value:` (a template expression string, or a literal of any other type)
+// or `template:` (see ComputedTemplateSpec), and must not declare
+// `required:` (meaningless for a field that's always self-supplied, never
+// prompted or --set) or `default:` (redundant with `value:`/`template:`,
+// and ambiguous about which wins). Conversely, a non-computed field must
+// not declare `value:` or `template:` -- both are silently ignored by
+// every other field type today, which would be confusing rather than an
+// error surfaced only much later.
 func validateComputedFieldDefinition(field *FieldDefinition) error {
 	if field.Type != fieldTypeComputed {
 		if field.Value != nil {
@@ -192,13 +193,37 @@ func validateComputedFieldDefinition(field *FieldDefinition) error {
 				WithExitCode(2).
 				Err()
 		}
+		if field.Template != nil {
+			return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+				WithExplanationf("Field %q declares `template:` but its type is %q, not `computed`", field.Name, field.Type).
+				WithHint("Either set `type: computed`, or remove `template:`").
+				WithContext("field_name", field.Name).
+				WithExitCode(2).
+				Err()
+		}
 		return nil
 	}
 
-	if field.Value == nil {
+	if field.Value == nil && field.Template == nil {
 		return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
-			WithExplanationf("Field %q has `type: computed` but no `value:` expression", field.Name).
-			WithHint("Add a `value:` Go-template expression computing this field from answers.*").
+			WithExplanationf("Field %q has `type: computed` but no `value:` expression or `template:`", field.Name).
+			WithHint("Add a `value:` Go-template expression computing this field from answers.*, or a `template:` rendering an external file").
+			WithContext("field_name", field.Name).
+			WithExitCode(2).
+			Err()
+	}
+	if field.Value != nil && field.Template != nil {
+		return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+			WithExplanationf("Field %q declares both `value:` and `template:`", field.Name).
+			WithHint("A computed field takes exactly one of `value:` or `template:`, not both").
+			WithContext("field_name", field.Name).
+			WithExitCode(2).
+			Err()
+	}
+	if field.Template != nil && field.Template.Source == "" {
+		return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+			WithExplanationf("Field %q has `template:` but no `source:`", field.Name).
+			WithHint("Add `template.source:`, a local path or a git::/oci://https:// reference").
 			WithContext("field_name", field.Name).
 			WithExitCode(2).
 			Err()

@@ -343,6 +343,15 @@ type FieldDefinition struct {
 	// completes, a regular field's own When can never depend on a computed
 	// field's result -- only the reverse.
 	Value any `yaml:"value,omitempty" json:"value,omitempty" jsonschema:"description=A Go-template expression computing this field's value from answers.* -- or a literal value of any type (only valid when type: computed)"`
+	// Template is a second, parameterized way to populate a computed
+	// field's value: render an external (local or remote) template file
+	// with explicit args, decode the rendered output by file extension,
+	// and store the decoded value the same way Value's literal branch does
+	// -- see ComputedTemplateSpec. Exactly one of Value/Template is
+	// required on a computed field (validateComputedFieldDefinition);
+	// every other field type ignores Template the same way it ignores
+	// Value.
+	Template *ComputedTemplateSpec `yaml:"template,omitempty" json:"template,omitempty" jsonschema:"description=Renders an external template file with args to compute this field's value (only valid when type: computed; exactly one of value/template required)"`
 	// When gates whether this field is prompted for, evaluated against
 	// answers collected from fields declared earlier in Fields (as the
 	// `answers` CEL variable). Empty always prompts. Never sees a computed
@@ -355,6 +364,25 @@ type FieldDefinition struct {
 	// though pkg/condition parses it -- confirmed empirically, not assumed.
 	// Use CEL's &&/||/! for compound conditions instead.
 	When condition.Condition `yaml:"when,omitempty" json:"when,omitempty" jsonschema:"description=Condition (predicate/CEL string or a list treated as 'all'; use CEL &&/||/! instead of the all/any/not map form) gating whether this field is prompted for,oneof_type=string;array"`
+}
+
+// ComputedTemplateSpec sources a `type: computed` field's value by
+// rendering an external template file with explicit args, instead of a
+// Value expression or literal. Source accepts the same forms !include
+// does (a local path, or a git::/oci://https:// remote reference) and is
+// always parsed with fixed default {{ }} delimiters, never the calling
+// template's own spec.delimiters -- a shared, reusable template file is
+// an independent asset and must not inherit a caller's delimiter choice.
+// The rendered output is decoded by Source's file extension (.json/.yaml/
+// .yml) into the field's value; any other extension is stored as the
+// rendered string as-is.
+type ComputedTemplateSpec struct {
+	Source string `yaml:"source" json:"source" jsonschema:"description=Local path or git::/oci://https:// remote reference -- same forms !include accepts"`
+	// Args's values use the same bare-path-vs-delimited-expression
+	// dispatch options: and computed Value already use: an
+	// "answers.<name>"/"config.<name>" dot-path, or a delimited Go-template
+	// expression.
+	Args map[string]string `yaml:"args,omitempty" json:"args,omitempty" jsonschema:"description=Each value is an answers.-prefixed dot-path or a delimited template expression -- the same dispatch options: uses"`
 }
 
 // Config represents the user's configuration values as a generic map to support dynamic fields from scaffold.yaml.

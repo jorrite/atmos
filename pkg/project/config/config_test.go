@@ -117,7 +117,7 @@ spec:
 	// identically -- exercise the real ComputeFields path, not just the
 	// loader.
 	values := map[string]interface{}{}
-	require.NoError(t, ComputeFields(config, values, nil))
+	require.NoError(t, ComputeFields(config, values, nil, nil))
 	assert.Equal(t, wantMap, values["block_style_map"])
 	assert.Equal(t, wantMap, values["flow_style_map"])
 	assert.Equal(t, wantList, values["block_style_list"])

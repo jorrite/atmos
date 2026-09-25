@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -35,7 +36,7 @@ func TestComputeFields_WritesValueIntoValues(t *testing.T) {
 	values := map[string]interface{}{"regions": []string{"us-east-1"}}
 	render := fakeComputedRenderer(t, map[string]any{"{{ answers.regions }}": "us-east-1"})
 
-	err := ComputeFields(cfg, values, render)
+	err := ComputeFields(cfg, values, render, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "us-east-1", values["primary_region"])
 }
@@ -59,7 +60,7 @@ func TestComputeFields_LaterComputedFieldSeesEarlierResult(t *testing.T) {
 		return "second-value", nil
 	})
 
-	err := ComputeFields(cfg, values, render)
+	err := ComputeFields(cfg, values, render, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "first-value", secondSawFirst)
 	assert.Equal(t, "second-value", values["second_computed"])
@@ -81,7 +82,7 @@ func TestComputeFields_LiteralValue(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called for a literal (non-string) Value")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, []any{"eastasia", "westeurope"}, values["regions_list"])
 	assert.Equal(t, 3, values["retry_count"])
@@ -97,7 +98,7 @@ func TestComputeFields_SkipsNonComputedFields(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called for a non-computed field")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "unchanged", values["regular"])
 }
@@ -114,7 +115,7 @@ func TestComputeFields_SkipsWhenFalse(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called when When evaluates false")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	_, exists := values["hidden_computed"]
 	assert.False(t, exists)
@@ -129,7 +130,7 @@ func TestComputeFields_RenderErrorPropagates(t *testing.T) {
 
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		return nil, renderErr
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, renderErr)
 }
@@ -139,7 +140,7 @@ func TestComputeFields_NilRendererErrors(t *testing.T) {
 		{Name: "broken_computed", Type: fieldTypeComputed, Value: "expr"},
 	}}}
 
-	err := ComputeFields(cfg, map[string]interface{}{}, nil)
+	err := ComputeFields(cfg, map[string]interface{}{}, nil, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errUtils.ErrScaffoldComputedFieldInvalid)
 }
@@ -182,6 +183,11 @@ func TestValidateComputedFieldDefinition(t *testing.T) {
 		{name: "computed with default", field: FieldDefinition{Name: "f", Type: fieldTypeComputed, Value: "expr", Default: "x"}, wantErr: true},
 		{name: "non-computed with value", field: FieldDefinition{Name: "f", Type: "input", Value: "expr"}, wantErr: true},
 		{name: "non-computed with a literal value", field: FieldDefinition{Name: "f", Type: "input", Value: 3}, wantErr: true},
+		{name: "valid computed field with template", field: FieldDefinition{Name: "f", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{Source: "./lib/sizing.tmpl"}}},
+		{name: "computed with template missing source", field: FieldDefinition{Name: "f", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{}}, wantErr: true},
+		{name: "computed with both value and template", field: FieldDefinition{Name: "f", Type: fieldTypeComputed, Value: "expr", Template: &ComputedTemplateSpec{Source: "./lib/sizing.tmpl"}}, wantErr: true},
+		{name: "non-computed with template", field: FieldDefinition{Name: "f", Type: "input", Template: &ComputedTemplateSpec{Source: "./lib/sizing.tmpl"}}, wantErr: true},
+		{name: "computed with template and required", field: FieldDefinition{Name: "f", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{Source: "./lib/sizing.tmpl"}, Required: true}, wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -261,6 +267,27 @@ func TestValidateComputedFieldOrdering(t *testing.T) {
 				{Name: "second", Type: fieldTypeComputed, Value: "expr-second"},
 			},
 		},
+		{
+			name: "template.args referencing an earlier computed field is fine",
+			fields: []FieldDefinition{
+				{Name: "first", Type: fieldTypeComputed, Value: "expr-first"},
+				{Name: "second", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{
+					Source: "./lib/sizing.tmpl",
+					Args:   map[string]string{"x": "answers.first"},
+				}},
+			},
+		},
+		{
+			name: "template.args referencing a later computed field is rejected",
+			fields: []FieldDefinition{
+				{Name: "first", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{
+					Source: "./lib/sizing.tmpl",
+					Args:   map[string]string{"x": "answers.second"},
+				}},
+				{Name: "second", Type: fieldTypeComputed, Value: "expr-second"},
+			},
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -333,4 +360,135 @@ func TestValidateOptionsNotComputed(t *testing.T) {
 			require.NoError(t, err)
 		})
 	}
+}
+
+// TestComputeFields_TemplateField proves a computed field's template:
+// resolves each Args entry (both the bare answers.<path> dot-path form and
+// the delimited-expression form, rendered via the same ComputedFieldRenderer
+// Value expressions use) into a map, then calls renderTemplate with
+// field.Template.Source and that map -- storing whatever renderTemplate
+// returns, the same literal-storage path a non-string Value uses.
+func TestComputeFields_TemplateField(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "tier", Type: "select"},
+		{Name: "sizing", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{
+			Source: "./lib/sizing.tmpl",
+			Args: map[string]string{
+				"tier":    "answers.tier",
+				"doubled": "{{ mul 2 2 }}",
+			},
+		}},
+	}}}
+	values := map[string]interface{}{"tier": "standard"}
+
+	render := ComputedFieldRenderer(func(expr string, _ map[string]interface{}, _ []string) (any, error) {
+		if expr == "{{ mul 2 2 }}" {
+			return 4, nil
+		}
+		return nil, fmt.Errorf("unexpected expression: %s", expr)
+	})
+
+	var gotSource string
+	var gotArgs map[string]interface{}
+	renderTemplate := ComputedTemplateRenderer(func(source string, args map[string]interface{}) (any, error) {
+		gotSource = source
+		gotArgs = args
+		return map[string]interface{}{"rendered": true}, nil
+	})
+
+	err := ComputeFields(cfg, values, render, renderTemplate)
+	require.NoError(t, err)
+	assert.Equal(t, "./lib/sizing.tmpl", gotSource)
+	assert.Equal(t, map[string]interface{}{"tier": "standard", "doubled": 4}, gotArgs)
+	assert.Equal(t, map[string]interface{}{"rendered": true}, values["sizing"])
+}
+
+// TestComputeFields_TemplateField_NilRendererErrors proves a computed
+// field's template: fails loudly (not silently no-op) when ComputeFields is
+// called without a ComputedTemplateRenderer.
+func TestComputeFields_TemplateField_NilRendererErrors(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "sizing", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{Source: "./lib/sizing.tmpl"}},
+	}}}
+
+	err := ComputeFields(cfg, map[string]interface{}{}, nil, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errUtils.ErrScaffoldComputedFieldInvalid)
+}
+
+// TestResolveTemplateArg covers both dispatch branches directly: a bare
+// answers.<path> dot-path walked against values with no renderer needed,
+// and a delimited expression routed through render.
+func TestResolveTemplateArg(t *testing.T) {
+	values := map[string]interface{}{"region": "us-east-1"}
+	delimiters := defaultDelimiters(nil)
+
+	t.Run("bare dot-path", func(t *testing.T) {
+		got, err := resolveTemplateArg("answers.region", values, nil, delimiters)
+		require.NoError(t, err)
+		assert.Equal(t, "us-east-1", got)
+	})
+
+	t.Run("delimited expression", func(t *testing.T) {
+		render := ComputedFieldRenderer(func(expr string, _ map[string]interface{}, _ []string) (any, error) {
+			assert.Equal(t, "{{ upper answers.region }}", expr)
+			return "US-EAST-1", nil
+		})
+		got, err := resolveTemplateArg("{{ upper answers.region }}", values, render, delimiters)
+		require.NoError(t, err)
+		assert.Equal(t, "US-EAST-1", got)
+	})
+
+	t.Run("bare dot-path missing key", func(t *testing.T) {
+		_, err := resolveTemplateArg("answers.missing", values, nil, delimiters)
+		require.Error(t, err)
+	})
+
+	t.Run("bare path without answers prefix", func(t *testing.T) {
+		_, err := resolveTemplateArg("region", values, nil, delimiters)
+		require.Error(t, err)
+	})
+
+	t.Run("delimited expression with nil renderer errors", func(t *testing.T) {
+		_, err := resolveTemplateArg("{{ upper answers.region }}", values, nil, delimiters)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, errUtils.ErrScaffoldComputedFieldInvalid)
+	})
+
+	t.Run("dot-path segment is not a map", func(t *testing.T) {
+		_, err := resolveTemplateArg("answers.region.nested", values, nil, delimiters)
+		require.Error(t, err)
+	})
+}
+
+// TestComputeTemplateField_ArgErrorPropagates proves an error resolving
+// one Template.Args entry aborts the whole field with clear context (which
+// field, which arg name), rather than silently skipping it.
+func TestComputeTemplateField_ArgErrorPropagates(t *testing.T) {
+	field := &FieldDefinition{Name: "sizing", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{
+		Source: "./lib/sizing.tmpl",
+		Args:   map[string]string{"x": "answers.missing"},
+	}}
+
+	_, err := computeTemplateField(field, map[string]interface{}{}, nil, func(string, map[string]interface{}) (any, error) {
+		t.Fatal("renderTemplate must not be called when an arg fails to resolve")
+		return nil, nil
+	}, defaultDelimiters(nil))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sizing")
+	assert.Contains(t, err.Error(), `"x"`)
+}
+
+// TestComputeTemplateField_RenderTemplateErrorPropagates proves a
+// renderTemplate failure surfaces with the field name for context.
+func TestComputeTemplateField_RenderTemplateErrorPropagates(t *testing.T) {
+	field := &FieldDefinition{Name: "sizing", Type: fieldTypeComputed, Template: &ComputedTemplateSpec{Source: "./lib/sizing.tmpl"}}
+	renderErr := errors.New("boom")
+
+	_, err := computeTemplateField(field, map[string]interface{}{}, nil, func(string, map[string]interface{}) (any, error) {
+		return nil, renderErr
+	}, defaultDelimiters(nil))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, renderErr)
+	assert.Contains(t, err.Error(), "sizing")
 }

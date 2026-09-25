@@ -866,6 +866,7 @@ func (ui *InitUI) resolvePreCollectedValues(
 		if cfgErr != nil {
 			return nil, useDefaults, cfgErr
 		}
+		ui.processor.SetSourceDir(embedsConfig.Source)
 		mergedValues, _, setupErr := ui.RunSetupForm(scaffoldConfig, targetPath, useDefaults, cmdTemplateValues)
 		if setupErr != nil {
 			return nil, useDefaults, fmt.Errorf("failed to run setup form against target: %w", setupErr)
@@ -937,6 +938,7 @@ func (ui *InitUI) promptForTargetPathWithScaffoldSetup(embedsConfig *tmpl.Config
 	}
 
 	// Run setup to get configuration values.
+	ui.processor.SetSourceDir(embedsConfig.Source)
 	mergedValues, _, err := ui.RunSetupForm(scaffoldConfig, tempDir, useDefaults, cmdTemplateValues)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to run setup form: %w", err)
@@ -1111,7 +1113,7 @@ func (ui *InitUI) RunSetupForm(scaffoldConfig *config.ScaffoldConfig, targetPath
 	// so a computed field's expression always sees fully-validated answers,
 	// and before the summary below, so a computed field's value is visible
 	// in it like any other field's.
-	if err := config.ComputeFields(scaffoldConfig, mergedValues, ui.processor.RenderAnswersExpression); err != nil {
+	if err := config.ComputeFields(scaffoldConfig, mergedValues, ui.processor.RenderAnswersExpression, ui.processor.RenderExternalTemplate); err != nil {
 		return nil, nil, fmt.Errorf("failed to compute derived fields: %w", err)
 	}
 
@@ -1652,6 +1654,7 @@ func (ui *InitUI) executeWithSetup(embedsConfig *tmpl.Configuration, targetPath 
 	}
 
 	// Run the setup form to collect configuration values.
+	ui.processor.SetSourceDir(embedsConfig.Source)
 	mergedValues, _, err := ui.RunSetupForm(scaffoldConfig, targetPath, useDefaults, cmdTemplateValues)
 	if err != nil {
 		return fmt.Errorf("failed to run setup form: %w", err)
@@ -1709,7 +1712,11 @@ func (ui *InitUI) executeWithSetup(embedsConfig *tmpl.Configuration, targetPath 
 	// file -- see matrixExpansionResult's doc comment for why recomputing
 	// per file is unsafe, not just wasteful.
 	matrixExpansions := make(map[string]matrixExpansionResult)
-	includedSet := includedPathSet(includedPaths)
+	// A computed field's template: source is only known once ComputeFields
+	// (run inside RunSetupForm, above) actually calls RenderExternalTemplate
+	// -- unlike !include, which resolves at load time -- so this can only
+	// be read now, after setup, not alongside includedPaths above.
+	includedSet := includedPathSet(append(includedPaths, ui.processor.TemplateConsumedPaths()...))
 	for _, file := range embedsConfig.Files {
 		// Skip the scaffold.yaml as it's only used for schema definition
 		if file.Path == config.ScaffoldConfigFileName {

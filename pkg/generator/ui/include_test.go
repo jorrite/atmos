@@ -58,3 +58,64 @@ spec:
 	require.NoError(t, err)
 	assert.Contains(t, string(generated), "lookup: map[MIT:map[]]")
 }
+
+// TestExecuteWithSetup_TemplateSourceExcludedFromOutput proves a file
+// consumed by a computed field's template: source (a local file rendered
+// with args, then decoded) is excluded from generation output the same
+// way an !include-consumed file already is -- see
+// Processor.TemplateConsumedPaths and ui.go's includedSet check. Found via
+// a /field-test pass: unlike !include (resolved at load time),
+// template.source is only known once ComputeFields actually calls
+// RenderExternalTemplate, so it needs its own accumulator merged in after
+// setup runs, not alongside config.WithIncludedPaths' load-time result.
+func TestExecuteWithSetup_TemplateSourceExcludedFromOutput(t *testing.T) {
+	ui := createTestUI(t)
+	targetDir := t.TempDir()
+
+	sourceDir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(sourceDir, "lib"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sourceDir, "lib", "sizing.json.tmpl"), []byte(
+		`{"count": {{ len .environments }}}`,
+	), 0o600))
+
+	configuration := &templates.Configuration{
+		Name:   "template-source-exclusion",
+		Source: sourceDir,
+		Files: []templates.File{
+			{Path: "scaffold.yaml", Content: `apiVersion: atmos/v1
+kind: AtmosScaffoldConfig
+metadata:
+  name: template-source-exclusion
+spec:
+  fields:
+    - name: environments
+      type: multiselect
+      options: [dev, staging]
+    - name: sizing
+      type: computed
+      template:
+        source: ./lib/sizing.json.tmpl
+        args:
+          environments: answers.environments
+  files:
+    - path: lib/sizing.json.tmpl
+    - path: output.txt
+`, Permissions: 0o644},
+			{Path: "lib/sizing.json.tmpl", Content: `{"count": {{ len .environments }}}`, Permissions: 0o644},
+			{Path: "output.txt", Content: "sizing: {{ .Config.sizing }}\n", IsTemplate: true, Permissions: 0o644},
+		},
+	}
+
+	err := ui.executeWithSetup(
+		configuration, targetDir, false, false, true, "",
+		map[string]interface{}{"environments": []string{"dev", "staging"}}, []string{"{{", "}}"},
+	)
+	require.NoError(t, err)
+
+	_, err = os.Stat(filepath.Join(targetDir, "lib", "sizing.json.tmpl"))
+	assert.True(t, os.IsNotExist(err), "the template.source-consumed file must not be generated as output")
+
+	generated, err := os.ReadFile(filepath.Join(targetDir, "output.txt"))
+	require.NoError(t, err)
+	assert.Contains(t, string(generated), "sizing: map[count:2]")
+}
