@@ -80,6 +80,10 @@ record answers and provenance for updates.
   actually resolved -- a missing local file, an unreachable remote source, or a resolved value the
   schema doesn't allow (e.g. a YQ filter producing the wrong shape for `options:`) fails validation
   too, not just generation.
+- Every computed field's
+  [`template.source`](/cli/commands/scaffold/generate#deriving-a-value-from-an-external-template)
+  is fetched and parsed as a Go template -- a missing local file, an unreachable remote source, or
+  invalid template syntax fails validation too, not just generation.
 
 `atmos scaffold validate` checks template configuration. `atmos scaffold generate` additionally
 checks concrete answers: required text, select/multiselect options, boolean coercion, and regex

@@ -145,14 +145,48 @@ it's resolved before computed fields have a value, so a `select`/`multiselect` f
 `options:` referencing a computed field is a load-time error rather than a silently
 non-functional constraint.
 
-`value:` is required on a `computed` field (and rejected on every other field type); `required:`
-and `default:` are both rejected on a `computed` field, since it's always self-supplied. Computed
-fields evaluate once, in `spec.fields[]` declaration order, after every regular field's answer is
-already final — a computed field can reference any regular field regardless of order, but only an
-**earlier-declared** computed field's own result. Referencing itself or a later-declared computed
-field fails at scaffold-load time rather than silently rendering as `<no value>`. Because that
-evaluation happens after the interactive form completes, a regular field's own `when:` can never
-depend on a computed field — only the reverse works.
+Exactly one of `value:` or `template:` (below) is required on a `computed` field (and both are
+rejected on every other field type); `required:` and `default:` are both rejected on a `computed`
+field, since it's always self-supplied. Computed fields evaluate once, in `spec.fields[]`
+declaration order, after every regular field's answer is already final — a computed field can
+reference any regular field regardless of order, but only an **earlier-declared** computed field's
+own result. Referencing itself or a later-declared computed field fails at scaffold-load time
+rather than silently rendering as `<no value>`. Because that evaluation happens after the
+interactive form completes, a regular field's own `when:` can never depend on a computed field —
+only the reverse works.
+
+### Deriving a Value from an External Template
+
+`value:` covers a single expression or a hand-authored literal. For a more complex derived
+structure — one that depends on several answers and would otherwise mean copy-pasting the same
+derivation logic into every file that needs it — a computed field's `template:` renders an
+external file with explicit arguments instead:
+
+```yaml title="scaffold.yaml"
+spec:
+  fields:
+    - name: environments
+      type: multiselect
+      options: [dev, staging, prod]
+    - name: sizing
+      type: computed
+      template:
+        source: ./lib/sizing.json.tmpl
+        args:
+          environments: answers.environments
+```
+
+`source` accepts the same forms [`!include`](#loading-external-data-with-include) does — a local
+path (resolved relative to `scaffold.yaml`'s own directory) or a remote `git::`/`oci://`/`https://`
+reference. Each `args:` value is resolved the same way a dynamic `options:` value is: an
+`answers.<path>` dot-path, or a delimited Go-template expression. `source` is always parsed and
+rendered with fixed default `{{ }}` delimiters — never the calling template's own `spec.delimiters`
+— since a shared, reusable template file is an independent asset and shouldn't have to know what
+delimiter convention happened to be in effect wherever it's used. The rendered output is decoded by
+`source`'s file extension into the field's value (a trailing `.tmpl` is stripped first, so
+`sizing.json.tmpl` decodes as JSON the same way `sizing.json` would; `.yaml`/`.yml` decode as YAML;
+anything else is stored as the plain rendered string). A local `source:` is automatically excluded
+from generated output, the same way a locally-`!include`d file already is.
 
 ## Dynamic and Label/Value Options
 
