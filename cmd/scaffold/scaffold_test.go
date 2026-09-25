@@ -391,6 +391,22 @@ spec:
 `,
 			expectError: false,
 		},
+		{
+			name: "computed field template.source missing local file rejected",
+			content: `apiVersion: atmos/v1
+kind: AtmosScaffoldConfig
+metadata:
+  name: test-scaffold
+spec:
+  fields:
+    - name: sizing
+      type: computed
+      template:
+        source: ./lib/does-not-exist.tmpl
+`,
+			expectError:  true,
+			errorContain: "scaffold validation failed",
+		},
 	}
 
 	for _, tt := range tests {
@@ -412,6 +428,34 @@ spec:
 			}
 		})
 	}
+}
+
+// TestValidateScaffoldFile_TemplateSourceValid confirms a computed field's
+// template.source pointing at a real local file passes validation -- the
+// happy-path counterpart to the missing-file case covered in the table
+// above, so a regression that starts rejecting valid sources is caught too.
+func TestValidateScaffoldFile_TemplateSourceValid(t *testing.T) {
+	dir := t.TempDir()
+
+	scaffoldContent := `apiVersion: atmos/v1
+kind: AtmosScaffoldConfig
+metadata:
+  name: test-scaffold
+spec:
+  fields:
+    - name: sizing
+      type: computed
+      template:
+        source: ./lib/sizing.json.tmpl
+`
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "lib"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "lib", "sizing.json.tmpl"), []byte(`{"replicas": 1}`), 0o644))
+	scaffoldPath := filepath.Join(dir, "scaffold.yaml")
+	require.NoError(t, os.WriteFile(scaffoldPath, []byte(scaffoldContent), 0o644))
+
+	err := validateScaffoldFile(scaffoldPath)
+
+	assert.NoError(t, err)
 }
 
 // writeLocalTemplate creates a minimal local template directory with a
