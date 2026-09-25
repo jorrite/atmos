@@ -1,0 +1,31 @@
+apiVersion: atmos/v1
+kind: AtmosScaffoldConfig
+metadata:
+  name: example
+  description: "Compute a derived data structure once from a rendered external template, shared across every file in the template"
+spec:
+  delimiters: ["<%", "%>"]
+  fields:
+    - name: environments
+      label: Environments
+      type: multiselect
+      options: [dev, staging, prod]
+      default: [dev]
+
+    - name: sizing
+      type: computed
+      description: >-
+        Renders lib/sizing.json.tmpl with the selected environments,
+        deriving a per-environment resource plan once instead of every
+        file re-implementing the same sizing rule.
+      template:
+        source: ./lib/sizing.json.tmpl
+        args:
+          environments: answers.environments
+
+  files:
+    # lib/sizing.json.tmpl only exists to be rendered above -- it's
+    # automatically excluded from generated output, so only sizing.tf
+    # actually gets generated.
+    - path: lib/sizing.json.tmpl
+    - path: sizing.tf
