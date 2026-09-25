@@ -1,0 +1,72 @@
+---
+slug: scaffold-computed-template
+title: "Derive a complex value once with a computed field's template:"
+authors: [jorrite]
+tags: [feature]
+---
+
+Some values a scaffold template needs aren't a single expression — they're a whole data structure
+derived from several answers, built up with loops and conditionals. Until now, that derivation
+logic had nowhere to live but inline in whichever file happened to need it first, copy-pasted into
+every other file that needed the same structure.
+
+<!--truncate-->
+
+## The Problem
+
+A `type: computed` field's `value:` is great for a single expression — "the primary region,
+defaulting to the only one when there's just one" — but some derivations are bigger than that: a
+per-environment resource plan, a naming convention lookup, anything that needs a loop or a
+conditional to build up rather than a single pipe of functions. That kind of logic doesn't fit
+comfortably in a one-line expression, so it tends to end up duplicated inline in every file that
+needs the result, with each copy quietly free to drift from the others.
+
+## The Fix
+
+A computed field's value can now also come from `template: {source, args}` — rendering an external
+file as an ordinary Go template with explicit arguments, instead of a `value:` expression:
+
+```yaml title="scaffold.yaml"
+spec:
+  fields:
+    - name: environments
+      type: multiselect
+      options: [dev, staging, prod]
+    - name: sizing
+      type: computed
+      template:
+        source: ./lib/sizing.json.tmpl
+        args:
+          environments: answers.environments
+```
+
+`lib/sizing.json.tmpl` holds the actual derivation — loops, conditionals, whatever the logic needs
+— and is rendered once, with `environments` passed in explicitly. The result is decoded by the
+source file's extension (`.json`, `.yaml`/`.yml`, or the plain rendered string otherwise) and
+lands at `.Config.sizing`, usable from any file in the template, the same way any other computed
+field's value already is.
+
+The shared file always renders with fixed default `{{ }}` delimiters, regardless of what the
+calling `scaffold.yaml` itself configures — a reusable template file is an independent asset and
+shouldn't have to know or care what delimiter convention happened to be in effect wherever someone
+ends up using it. And a local `source:` — like a locally-`!include`d file — never shows up in generated output; it
+exists purely to be rendered as data.
+
+`source` is checked by [`atmos scaffold validate`](/cli/commands/scaffold/validate) too, not just
+`generate` — a missing local file, an unreachable remote reference, or invalid template syntax
+fails validation up front, before anyone runs generation against real answers.
+
+## How to Use It
+
+Add `template:` (with `source:` and, when the derivation needs any answers, `args:`) instead of
+`value:` on any `type: computed` field — the two are mutually exclusive, exactly one is required.
+`source` accepts everything [`!include`](/functions/yaml/include) does: a local path, or a remote
+`git::`/`oci://`/`https://` reference. See the full
+[`examples/scaffolding-computed-template`](https://github.com/cloudposse/atmos/tree/main/examples/scaffolding-computed-template)
+example, or the [Computed Fields](/cli/commands/scaffold/generate#computed-fields) section of the
+`atmos scaffold generate` docs.
+
+## Get Involved
+
+See the [`atmos scaffold generate`](/cli/commands/scaffold/generate#computed-fields) docs for the
+full reference, or [open an issue](https://github.com/cloudposse/atmos/issues) with feedback.
