@@ -176,6 +176,31 @@ func validateFieldDefinitions(scaffoldConfig *ScaffoldConfig) error {
 	return nil
 }
 
+// validateNonComputedFieldHasNoComputedProperties rejects a non-computed
+// field declaring `value:` or `template:` -- both are silently ignored by
+// every other field type today, which would be confusing rather than an
+// error surfaced only much later. Split out of validateComputedFieldDefinition
+// purely to keep that function under the linter's function-length limit.
+func validateNonComputedFieldHasNoComputedProperties(field *FieldDefinition) error {
+	if field.Value != nil {
+		return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+			WithExplanationf("Field %q declares `value:` but its type is %q, not `computed`", field.Name, field.Type).
+			WithHint("Either set `type: computed`, or remove `value:` and use `default:` instead").
+			WithContext("field_name", field.Name).
+			WithExitCode(2).
+			Err()
+	}
+	if field.Template != nil {
+		return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+			WithExplanationf("Field %q declares `template:` but its type is %q, not `computed`", field.Name, field.Type).
+			WithHint("Either set `type: computed`, or remove `template:`").
+			WithContext("field_name", field.Name).
+			WithExitCode(2).
+			Err()
+	}
+	return nil
+}
+
 // validateComputedFieldDefinition statically validates a `type: computed`
 // field's shape at scaffold-load time: it must declare exactly one of
 // `value:` (a template expression string, or a literal of any other type)
@@ -188,23 +213,7 @@ func validateFieldDefinitions(scaffoldConfig *ScaffoldConfig) error {
 // error surfaced only much later.
 func validateComputedFieldDefinition(field *FieldDefinition) error {
 	if field.Type != fieldTypeComputed {
-		if field.Value != nil {
-			return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
-				WithExplanationf("Field %q declares `value:` but its type is %q, not `computed`", field.Name, field.Type).
-				WithHint("Either set `type: computed`, or remove `value:` and use `default:` instead").
-				WithContext("field_name", field.Name).
-				WithExitCode(2).
-				Err()
-		}
-		if field.Template != nil {
-			return errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
-				WithExplanationf("Field %q declares `template:` but its type is %q, not `computed`", field.Name, field.Type).
-				WithHint("Either set `type: computed`, or remove `template:`").
-				WithContext("field_name", field.Name).
-				WithExitCode(2).
-				Err()
-		}
-		return nil
+		return validateNonComputedFieldHasNoComputedProperties(field)
 	}
 
 	if field.Value == nil && field.Template == nil {
