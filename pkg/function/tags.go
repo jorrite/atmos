@@ -41,6 +41,11 @@ const (
 	// TagIncludeRaw includes raw content from another file.
 	TagIncludeRaw = fntag.IncludeRaw
 
+	// TagIncludeTemplate fetches an external template source, renders it as
+	// a Go template fed with scaffold answers data, and includes the
+	// decoded result.
+	TagIncludeTemplate = fntag.IncludeTemplate
+
 	// TagRepoRoot returns the git repository root path.
 	TagRepoRoot = fntag.RepoRoot
 

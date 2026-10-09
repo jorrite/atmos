@@ -304,7 +304,53 @@ included file's own content is never resolved, and stays as inert, unprocessed t
 stack manifests, which share the same underlying `!include` implementation and the same
 limitation.
 
-Besides `!include`/[`!include.raw`](/functions/yaml/include.raw), `scaffold.yaml` resolves a fixed
+### `!include.template`: Rendering an External Template Against Answers
+
+`!include.template` is `!include`'s third form: instead of including a file's content as-is (or
+YQ-filtered), it fetches the source as a Go template, renders it, and decodes the result -- the
+same "render, then decode" idiom [`!template`](/functions/yaml/template) uses in stack manifests.
+It's only valid on a `type: computed` field's `value:`, and -- unlike every other YAML function
+`scaffold.yaml` supports -- it does **not** resolve before schema validation. It needs the
+answers collected by the interactive form, which don't exist yet at that point, so it resolves
+later: once the form completes, alongside every other computed field (see
+[Computed Fields](#computed-fields) above).
+
+```yaml title="scaffold.yaml"
+spec:
+  fields:
+    - name: regions
+      type: multiselect
+      options: [us-east-1, us-west-2, eu-west-1]
+
+    - name: sizing
+      type: computed
+      value: !include.template ./lib/sizing.json.tmpl answers.regions
+```
+
+The first argument is the template source -- a local path (resolved relative to `scaffold.yaml`'s
+own directory) or a remote `git::`, `oci://`, or `https://` reference, the same forms `!include`
+accepts. The optional second argument is the data fed to the template as its own `.` -- here, the
+bare dot-path `answers.regions` (the `regions` field's own answer, a list). Omitted entirely, `.`
+defaults to the full answers map, exactly like a regular scaffold file template's own ambient
+data. A delimited Go-template expression works too, for deriving the data to feed rather than
+passing an existing answer through as-is:
+
+```yaml title="scaffold.yaml"
+    - name: sizing
+      type: computed
+      value: !include.template ./lib/sizing.json.tmpl {{ dict "regions" answers.regions "tier" answers.tier }}
+```
+
+`lib/sizing.json.tmpl` is rendered as an ordinary Go template (fixed `{{ }}` delimiters, never the
+calling scaffold's own `spec.delimiters` -- a shared, reusable template file is an independent
+asset and must not inherit a caller's delimiter choice), and its rendered output is decoded by the
+source's own file extension: `.json` via JSON, `.yaml`/`.yml` via YAML, anything else kept as the
+plain rendered string (a trailing `.tmpl` is stripped first, so `sizing.json.tmpl` decodes as
+JSON the same way `sizing.json` would). The decoded result lands at `.Config.sizing` like any
+other computed field. Like a local `!include` target, a local `!include.template` source that
+exists solely to be rendered is automatically excluded from generated output.
+
+Besides `!include`/[`!include.raw`](/functions/yaml/include.raw)/`!include.template`, `scaffold.yaml` resolves a fixed
 set of other YAML functions that need no stack, component, or backend context --
 [`!env`](/functions/yaml/env), [`!random`](/functions/yaml/random), [`!cwd`](/functions/yaml/cwd),
 the `!git.*`/[`!repo-root`](/functions/yaml/repo-root) family

@@ -206,6 +206,29 @@ spec:
 	assert.Equal(t, "{{ not_a_real_template_var }}", m.Spec.Source)
 }
 
+// TestLoad_WithIncludeResolution_IncludeTemplateDefers proves
+// !include.template survives Load as a plain deferred string rather than
+// being resolved (it needs scaffold answers data this phase doesn't have)
+// or rejected as unsupported.
+func TestLoad_WithIncludeResolution_IncludeTemplateDefers(t *testing.T) {
+	registerTestKind(t)
+
+	dir := t.TempDir()
+	data := []byte(`apiVersion: atmos/v1
+kind: AtmosTestConfig
+metadata:
+  name: x
+spec:
+  source: !include.template ./lib/sizing.json.tmpl answers.regions
+`)
+	atmosConfig := &schema.AtmosConfiguration{BasePath: dir, BasePathAbsolute: dir}
+	manifestFile := filepath.Join(dir, "manifest.yaml")
+
+	m, err := Load[testSpec](testKind, data, WithIncludeResolution(atmosConfig, manifestFile, nil))
+	require.NoError(t, err)
+	assert.Equal(t, "!include.template ./lib/sizing.json.tmpl answers.regions", m.Spec.Source)
+}
+
 // TestLoad_WithIncludeResolution_UnsetRejected and
 // TestLoad_WithIncludeResolution_AppendRejected prove !unset/!append --
 // stack-inheritance-override concepts scaffold.yaml's field/answer merge has

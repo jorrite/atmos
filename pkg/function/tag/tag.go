@@ -44,6 +44,20 @@ const (
 	// IncludeRaw includes raw content from another file.
 	IncludeRaw = "include.raw"
 
+	// IncludeTemplate fetches an external template source, renders it as a
+	// Go template fed with scaffold answers data, and includes the decoded
+	// result. Scaffold-only: ScaffoldTagPolicy (pkg/utils) is the only
+	// policy with a real handler for it (a deferring one -- see its own
+	// doc comment); every other context (a stack manifest, atmos.yaml)
+	// defers it like any other tag it doesn't explicitly handle, but has
+	// no later phase that resolves it either, so it silently survives as
+	// an inert "!include.template <args>" string rather than erroring or
+	// doing anything useful -- the same already-accepted fallback
+	// behavior any globally-registered-but-context-unhandled tag gets
+	// there (see internal/exec's processCustomTagsWithContext final
+	// fallback).
+	IncludeTemplate = "include.template"
+
 	// RepoRoot returns the git repository root path.
 	RepoRoot = "repo-root"
 
@@ -142,6 +156,7 @@ func All() []string {
 		CEL,
 		Include,
 		IncludeRaw,
+		IncludeTemplate,
 		RepoRoot,
 		GitRoot,
 		GitSha,
@@ -184,6 +199,7 @@ var tagsMap = map[string]bool{
 	CEL:                     true,
 	Include:                 true,
 	IncludeRaw:              true,
+	IncludeTemplate:         true,
 	RepoRoot:                true,
 	GitRoot:                 true,
 	GitSha:                  true,
@@ -295,13 +311,14 @@ func IsAtmosConfigYAML(yamlTag string) bool {
 	return false
 }
 
-// ScaffoldYAML returns the YAML tags supported while resolving scaffold.yaml
-// manifests. Mirrors AtmosConfigYAML's "no stack context available" set,
-// since scaffold.yaml -- like atmos.yaml -- is fully resolved once with no
-// later evaluation phase, but swaps Unset (a stack-inheritance override
-// concept scaffold.yaml's field/answer merge has no equivalent for) for
-// Literal (bypassing scaffold's own Go-template evaluation of a field
-// value, a real need atmos.yaml has no equivalent concern for).
+// ScaffoldYAML returns the YAML tags recognized while resolving
+// scaffold.yaml manifests. Mirrors AtmosConfigYAML's "no stack context
+// available" set, since scaffold.yaml -- like atmos.yaml -- is fully
+// resolved once with no later evaluation phase, but swaps Unset (a
+// stack-inheritance override concept scaffold.yaml's field/answer merge has
+// no equivalent for) for Literal (bypassing scaffold's own Go-template
+// evaluation of a field value, a real need atmos.yaml has no equivalent
+// concern for).
 //
 // Exec is deliberately excluded, unlike AtmosConfigYAML (which does include
 // it): scaffold.yaml's metadata (name/description/version) is resolved for
@@ -311,12 +328,22 @@ func IsAtmosConfigYAML(yamlTag string) bool {
 // configured template (including a shared/vendored one from a catalog) run
 // code merely by being listed, not just generated. AtmosConfigYAML has no
 // equivalent "resolved just to list" trigger for atmos.yaml itself.
+//
+// IncludeTemplate is the one entry here that is NOT resolved immediately --
+// it needs scaffold answers data that doesn't exist yet at this phase, so
+// its handler (ScaffoldTagPolicy) only defers it (rewrites it into a
+// "<tag> <value>" string, like the stack-manifest policy's own Defer
+// behavior) for config.ComputeFields to resolve once answers exist. It's
+// still listed here (not just left to a Defer:true fallback) because every
+// other unhandled tag in ScaffoldTagPolicy is a hard error, not a silent
+// defer -- see ScaffoldTagPolicy's own doc comment.
 func ScaffoldYAML() []string {
 	defer perf.Track(nil, "tag.ScaffoldYAML")()
 
 	return []string{
 		ToYAML(Include),
 		ToYAML(IncludeRaw),
+		ToYAML(IncludeTemplate),
 		ToYAML(Env),
 		ToYAML(Random),
 		ToYAML(Cwd),

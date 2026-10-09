@@ -6,6 +6,8 @@ import (
 
 	errUtils "github.com/cloudposse/atmos/errors"
 	"github.com/cloudposse/atmos/pkg/condition"
+	"github.com/cloudposse/atmos/pkg/function/parser"
+	fntag "github.com/cloudposse/atmos/pkg/function/tag"
 	"github.com/cloudposse/atmos/pkg/perf"
 )
 
@@ -16,6 +18,19 @@ import (
 // importing pkg/generator/engine, for the same import-cycle reason
 // FieldOptionsRenderer is (see its own doc comment).
 type ComputedFieldRenderer func(expr string, answers map[string]interface{}, delimiters []string) (any, error)
+
+// ExternalTemplateRenderer fetches an !include.template source (a local
+// path, or a remote git::/oci://https:// reference), renders it as a Go
+// template against data, and returns its decoded result. Supplied by
+// engine.Processor.RenderExternalTemplate; duplicated here rather than
+// importing pkg/generator/engine, for the same import-cycle reason
+// ComputedFieldRenderer is.
+type ExternalTemplateRenderer func(source string, data any) (any, error)
+
+// includeTemplateTag is !include.template's YAML tag, cached once --
+// cutIncludeTemplateTag compares every computed field's Value string
+// against it, every ComputeFields run.
+var includeTemplateTag = fntag.ToYAML(fntag.IncludeTemplate)
 
 // ComputeFields evaluates every type: computed field's Value, in the order
 // fields are declared in spec.fields, and writes each result into values
@@ -32,7 +47,7 @@ type ComputedFieldRenderer func(expr string, answers map[string]interface{}, del
 // false against the values collected so far is skipped entirely (left
 // unset, deleting any stale value a persisted record already carried for
 // it), matching how a hidden regular field is never prompted for either.
-func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}, render ComputedFieldRenderer) error {
+func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}, render ComputedFieldRenderer, renderTemplate ExternalTemplateRenderer) error {
 	defer perf.Track(nil, "config.ComputeFields")()
 
 	delimiters := defaultDelimiters(scaffoldConfig.Spec.Delimiters)
@@ -54,6 +69,16 @@ func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}
 		}
 
 		expr, isExpression := field.Value.(string)
+		if isExpression {
+			if rawArgs, isIncludeTemplate := cutIncludeTemplateTag(expr); isIncludeTemplate {
+				value, err := resolveIncludeTemplateField(field.Name, rawArgs, values, render, renderTemplate, delimiters)
+				if err != nil {
+					return fmt.Errorf("computed field %q: %w", field.Name, err)
+				}
+				values[field.Name] = value
+				continue
+			}
+		}
 		if !isExpression || !containsTemplateAction(expr, delimiters) {
 			// Not a template-expression string -- an already-resolved
 			// literal (hand-authored, or produced by a YAML function like
@@ -81,6 +106,130 @@ func ComputeFields(scaffoldConfig *ScaffoldConfig, values map[string]interface{}
 		values[field.Name] = value
 	}
 	return nil
+}
+
+// cutIncludeTemplateTag reports whether expr is a deferred !include.template
+// tag value -- the plain "!include.template <source> [data-expr]" string
+// utils.ScaffoldTagPolicy's handler rewrites the tag into (see
+// pkg/utils/yaml_tag_walker.go's handleDeferredTag), since !include.template
+// needs scaffold answers data that doesn't exist yet at the earlier phase
+// that walk runs in. Returns the raw argument string after the tag (ready
+// for parser.ParseIncludeTemplate) and true when it matches; ("", false)
+// for every other Value shape (a literal, an ordinary computed expression,
+// or any other deferred tag -- scaffold.yaml has none of those today, but
+// nothing here assumes it never will).
+func cutIncludeTemplateTag(expr string) (string, bool) {
+	if expr == includeTemplateTag {
+		return "", true
+	}
+	return strings.CutPrefix(expr, includeTemplateTag+" ")
+}
+
+// resolveIncludeTemplateField resolves a computed field's !include.template
+// Value: parses rawArgs into a source and an optional data expression (see
+// parser.ParseIncludeTemplate), resolves the data expression against
+// answers (defaulting to the full answers map when none is given -- see
+// resolveIncludeTemplateData), and renders the source against that data via
+// renderTemplate (engine.Processor.RenderExternalTemplate).
+func resolveIncludeTemplateField(
+	fieldName, rawArgs string,
+	answers map[string]interface{},
+	render ComputedFieldRenderer,
+	renderTemplate ExternalTemplateRenderer,
+	delimiters []string,
+) (any, error) {
+	if renderTemplate == nil {
+		return nil, errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+			WithExplanationf("Field %q uses !include.template but no external-template renderer is available", fieldName).
+			WithHint("This is an Atmos bug: ComputeFields was called without an ExternalTemplateRenderer").
+			WithContext("field_name", fieldName).
+			WithExitCode(2).
+			Err()
+	}
+
+	parsed, err := parser.ParseIncludeTemplate(rawArgs)
+	if err != nil {
+		return nil, fmt.Errorf("!include.template: %w", err)
+	}
+
+	data, err := resolveIncludeTemplateData(fieldName, parsed.DataExpr, answers, render, delimiters)
+	if err != nil {
+		return nil, err
+	}
+
+	return renderTemplate(parsed.Source, data)
+}
+
+// resolveIncludeTemplateData resolves !include.template's optional second
+// positional argument -- the data fed to the external template as "." --
+// against answers. Empty (the common case) defaults to the full answers
+// map, exactly like a regular scaffold file template's own ambient data.
+// Otherwise dataExpr is dispatched the same bare-dot-path-vs-delimited-
+// expression way options:/a computed Value already are
+// (resolveFieldOptions in validation.go): containing delimiters[0] renders
+// it as a Go-template expression via render; otherwise it's a plain
+// "answers.<path>" dot-path, walked directly -- which may resolve to any
+// shape (a list, e.g. answers.regions, not just a map), so the result is
+// passed through as-is rather than forced into a map.
+func resolveIncludeTemplateData(
+	fieldName, dataExpr string,
+	answers map[string]interface{},
+	render ComputedFieldRenderer,
+	delimiters []string,
+) (any, error) {
+	if dataExpr == "" {
+		return answers, nil
+	}
+
+	if strings.Contains(dataExpr, delimiters[0]) {
+		if render == nil {
+			return nil, errUtils.Build(errUtils.ErrScaffoldComputedFieldInvalid).
+				WithExplanationf("Field %q's !include.template data expression requires an expression renderer", fieldName).
+				WithHint("This is an Atmos bug: ComputeFields was called without a ComputedFieldRenderer").
+				WithContext("field_name", fieldName).
+				WithExitCode(2).
+				Err()
+		}
+		value, err := render(dataExpr, answers, delimiters)
+		if err != nil {
+			return nil, fmt.Errorf("field %q: !include.template data expression: %w", fieldName, err)
+		}
+		return value, nil
+	}
+
+	value, err := resolveAnswersDotPath(dataExpr, answers)
+	if err != nil {
+		return nil, fmt.Errorf("field %q: !include.template data expression: %w", fieldName, err)
+	}
+	return value, nil
+}
+
+// resolveAnswersDotPath walks a bare "answers.<path>" dot-path against
+// answers, returning whatever value it resolves to (any shape -- a list, a
+// map, a scalar). Mirrors resolveFieldOptionsFromAnswers' own walk (see
+// validation.go), minus that function's list-shape requirement and
+// field-label lookup, which don't apply to !include.template's data
+// expression.
+func resolveAnswersDotPath(path string, answers map[string]interface{}) (any, error) {
+	rest, ok := strings.CutPrefix(path, answersPrefix)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q does not start with %q", errFieldOptionsSourceInvalid, path, answersPrefix)
+	}
+
+	var current any = answers
+	segments := strings.Split(rest, ".")
+	for _, segment := range segments {
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("%w: %q: %q is not a map", errFieldOptionsSourceNotFound, path, segment)
+		}
+		value, exists := m[segment]
+		if !exists {
+			return nil, fmt.Errorf("%w: %q", errFieldOptionsSourceNotFound, path)
+		}
+		current = value
+	}
+	return current, nil
 }
 
 // containsTemplateAction reports whether expr contains a template action

@@ -141,6 +141,28 @@ and `pkg/generator/` for the source of truth on current behavior.
     `utils.ProcessIncludeTag` isn't a same-type drop-in; it would need an explicit
     conversion step or a library migration first.
 
+**Implemented since the above was written**:
+- ✅ `!include.template`, `!include`'s third form, for a `type: computed` field's `value:`
+  only: fetches a local or remote (`git::`/`oci://`/`https://`) template source, renders it as
+  an ordinary Go template (fixed `{{ }}` delimiters, never the calling scaffold's own
+  `spec.delimiters`), and decodes the rendered output by file extension (`.json`/`.yaml`/`.yml`,
+  else the plain rendered string) — the same "render, then decode" idiom `!template` uses in
+  stack manifests. Unlike every other `scaffold.yaml` YAML function, it does **not** resolve at
+  the context-free `ScaffoldTagPolicy` phase: it needs scaffold answers data, which doesn't
+  exist until the interactive form completes, so `ScaffoldTagPolicy` only *defers* it (rewrites
+  it into a plain `"!include.template <args>" `string, the same mechanism the stack-manifest
+  policy already uses for every tag it defers to a later phase) and `config.ComputeFields`
+  resolves it for real, right alongside every other computed field. Syntax:
+  `!include.template <source> [data-expr]` — `data-expr`, when omitted, defaults to the full
+  answers map (matching a regular scaffold file template's own ambient data); given, it's
+  dispatched the same bare-`answers.<path>`-dot-path-vs-delimited-Go-template-expression way
+  `options:`/a computed `value:` already are. Deliberately **not** done as part of this work,
+  left as a known, explicitly out-of-scope gap: `options:`/`matrix:` support (both resolve at
+  points in the pipeline where this same deferred-answers-data problem doesn't have an
+  established resolution mechanism yet), and an `atmos scaffold validate`-time
+  fetch-and-parse-only check (the fetch/parse-without-executing mechanics already exist as
+  `engine.Processor.ValidateIncludeTemplateSource`, but nothing calls it yet).
+
 ## Goals
 
 ### Primary Goals

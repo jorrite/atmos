@@ -259,6 +259,7 @@ func TestAllSupportedYamlTagsList(t *testing.T) {
 		"!cel",
 		"!include",
 		"!include.raw",
+		"!include.template",
 		"!repo-root",
 		"!git.root",
 		"!git.sha",

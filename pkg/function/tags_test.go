@@ -24,6 +24,7 @@ func TestAllTags(t *testing.T) {
 		TagCEL,
 		TagInclude,
 		TagIncludeRaw,
+		TagIncludeTemplate,
 		TagRepoRoot,
 		TagGitRoot,
 		TagGitSha,

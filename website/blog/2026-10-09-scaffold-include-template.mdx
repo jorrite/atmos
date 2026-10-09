@@ -1,0 +1,81 @@
+---
+slug: scaffold-include-template
+title: "Derive structured data from an external template with !include.template"
+authors: [jorrite]
+tags: [feature]
+---
+
+`!include` brings a shared file's content into `scaffold.yaml` as-is. But sometimes what you need
+isn't a static file — it's a calculation over the answers someone just gave your scaffold
+template, and you'd rather keep that logic in one reusable file than duplicate it across every
+template that needs it.
+
+<!--truncate-->
+
+## The Problem
+
+A `type: computed` field's `value:` can already run a Go-template expression against the answers
+collected so far. For anything non-trivial, though, that expression has to live inline in
+`scaffold.yaml` — there's no way to pull the same derivation out into a shared, reusable file the
+way `!include` already lets you do for static reference data. A sizing plan, a region-to-tag
+lookup, any derived structure with real logic behind it, either gets copied into every template
+that needs it or stays stuck in one.
+
+## The Fix
+
+`!include.template` is `!include`'s third form. Instead of including a file's content as-is (or
+YQ-filtered), it fetches the source as a Go template, renders it against data, and decodes the
+result — the same "render, then decode" idiom [`!template`](/functions/yaml/template) already uses
+in stack manifests.
+
+```yaml title="scaffold.yaml"
+spec:
+  fields:
+    - name: regions
+      type: multiselect
+      options: [us-east-1, us-west-2, eu-west-1]
+
+    - name: sizing
+      type: computed
+      value: !include.template ./lib/sizing.json.tmpl answers.regions
+```
+
+The first argument is the template source — a local path or a remote `git::`/`oci://`/`https://`
+reference, the same forms `!include` accepts. The second, optional, argument is the data fed to
+the template as its own `.`; omitted entirely, it defaults to the full answers map, exactly like a
+regular scaffold file template's own ambient data. Here it's a bare `answers.regions` dot-path —
+the `regions` field's own answer — but a full Go-template expression works too, for deriving the
+data to feed rather than passing an existing answer straight through:
+
+```yaml title="scaffold.yaml"
+    - name: sizing
+      type: computed
+      value: !include.template ./lib/sizing.json.tmpl {{ dict "regions" answers.regions "tier" answers.tier }}
+```
+
+`lib/sizing.json.tmpl` renders as an ordinary Go template, and its output is decoded by file
+extension — `.json`/`.yaml`/`.yml`, or kept as a plain string for anything else — landing at
+`.Config.sizing` like any other computed field. Like a local `!include` target, a local
+`!include.template` source that exists solely to be rendered is automatically excluded from
+generated output.
+
+Unlike every other scaffold YAML function, `!include.template` only resolves once the interactive
+form completes — it needs the answers it's fed, which don't exist yet at the point
+`scaffold.yaml` is otherwise resolved (before schema validation, with no answers at all). It's
+only valid on a `type: computed` field's `value:` for exactly this reason: `options:` resolves
+before any computed field does, and would never have answers to work with either way.
+
+## How to Use It
+
+See the full
+[`examples/scaffolding-yaml-functions`](https://github.com/cloudposse/atmos/tree/main/examples/scaffolding-yaml-functions)
+example, or the
+[`!include.template`: Rendering an External Template Against Answers](/cli/commands/scaffold/generate#includetemplate-rendering-an-external-template-against-answers)
+section of the `atmos scaffold generate` docs.
+
+## Get Involved
+
+See the
+[`atmos scaffold generate`](/cli/commands/scaffold/generate#loading-external-data-with-include-and-other-yaml-functions)
+docs for the full reference, or [open an issue](https://github.com/cloudposse/atmos/issues) with
+feedback.

@@ -1347,6 +1347,7 @@ var (
 	ErrScaffoldComputedFieldInvalid           = errors.New("computed field is misconfigured")
 	ErrScaffoldComputedFieldNotSettable       = errors.New("computed field cannot be set")
 	ErrScaffoldFileDelimitersInvalid          = errors.New("spec.files[].delimiters must be exactly two non-empty strings")
+	ErrIncludeTemplateFailed                  = errors.New("!include.template failed")
 
 	// Source provisioner errors.
 	ErrSourceProvision       = errors.New("source provisioning failed")

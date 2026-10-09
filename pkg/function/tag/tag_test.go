@@ -23,6 +23,7 @@ func TestCatalog(t *testing.T) {
 		CEL,
 		Include,
 		IncludeRaw,
+		IncludeTemplate,
 		RepoRoot,
 		GitRoot,
 		GitSha,
@@ -119,6 +120,7 @@ func TestScaffoldYAML(t *testing.T) {
 	expected := []string{
 		"!include",
 		"!include.raw",
+		"!include.template",
 		"!env",
 		"!random",
 		"!cwd",

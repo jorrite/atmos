@@ -77,6 +77,31 @@ func TestWalkYAMLTags_ScaffoldPolicy_IncludeCallback(t *testing.T) {
 	assert.Equal(t, []string{"./greeting.yaml"}, seen)
 }
 
+// TestWalkYAMLTags_ScaffoldPolicy_IncludeTemplateDefers proves
+// !include.template, unlike every other tag ScaffoldTagPolicy recognizes,
+// is NOT resolved at this phase -- it's rewritten into a plain
+// "<tag> <value>" string with its custom tag cleared (the same shape the
+// stack-manifest policy's Defer:true fallback produces for an unhandled
+// tag), for config.ComputeFields to recognize and resolve once scaffold
+// answers data exists. The onInclude callback still fires with its raw
+// argument, same as !include/!include.raw, so a local source exclusively
+// used as a template source is excluded from generated output too.
+func TestWalkYAMLTags_ScaffoldPolicy_IncludeTemplateDefers(t *testing.T) {
+	doc := parseDocNode(t, "value: !include.template ./lib/sizing.json.tmpl answers.regions\n")
+
+	var seen []string
+	err := WalkYAMLTags(&schema.AtmosConfiguration{}, doc, "test.yaml", ScaffoldTagPolicy(func(path string) {
+		seen = append(seen, path)
+	}))
+	require.NoError(t, err)
+
+	root := doc.Content[0]
+	valueNode := root.Content[1]
+	assert.Equal(t, "!include.template ./lib/sizing.json.tmpl answers.regions", valueNode.Value)
+	assert.Empty(t, valueNode.Tag, "a deferred node's own custom tag must be cleared")
+	assert.Equal(t, []string{"./lib/sizing.json.tmpl answers.regions"}, seen)
+}
+
 // TestWalkYAMLTags_UnhandledTagRejectedUnderNonDeferPolicy proves a tag that
 // is globally valid (fntag.IsValidYAML accepts it) but absent from
 // ScaffoldTagPolicy's own handler map is a hard error naming the tag and

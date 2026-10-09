@@ -143,6 +143,43 @@ func TestParseInclude(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestParseIncludeTemplate(t *testing.T) {
+	actual, err := ParseIncludeTemplate("./lib/sizing.json.tmpl")
+	require.NoError(t, err)
+	assert.Equal(t, IncludeTemplateArgs{Source: "./lib/sizing.json.tmpl"}, actual)
+
+	actual, err = ParseIncludeTemplate("./lib/sizing.json.tmpl answers.regions")
+	require.NoError(t, err)
+	assert.Equal(t, IncludeTemplateArgs{Source: "./lib/sizing.json.tmpl", DataExpr: "answers.regions"}, actual)
+
+	// An unquoted multi-token expression containing internal quotes and a
+	// legitimate Sprig pipe is taken raw, not re-tokenized -- confirming
+	// this doesn't collide with a !store-style pipe-clause grammar.
+	actual, err = ParseIncludeTemplate(`./lib/sizing.json.tmpl {{ dict "environments" (answers.environments | default "dev") }}`)
+	require.NoError(t, err)
+	assert.Equal(t, IncludeTemplateArgs{
+		Source:   "./lib/sizing.json.tmpl",
+		DataExpr: `{{ dict "environments" (answers.environments | default "dev") }}`,
+	}, actual)
+
+	// The same expression wrapped in an outer quote pair unquotes cleanly too.
+	actual, err = ParseIncludeTemplate(`./lib/sizing.json.tmpl '{{ dict "environments" answers.environments }}'`)
+	require.NoError(t, err)
+	assert.Equal(t, IncludeTemplateArgs{
+		Source:   "./lib/sizing.json.tmpl",
+		DataExpr: `{{ dict "environments" answers.environments }}`,
+	}, actual)
+
+	actual, err = ParseIncludeTemplate(`"template with spaces.tmpl"`)
+	require.NoError(t, err)
+	assert.Equal(t, IncludeTemplateArgs{Source: "template with spaces.tmpl"}, actual)
+
+	_, err = ParseIncludeTemplate("")
+	require.Error(t, err)
+	_, err = ParseIncludeTemplate(`"`)
+	require.Error(t, err)
+}
+
 func TestParseStore(t *testing.T) {
 	tests := []struct {
 		name  string

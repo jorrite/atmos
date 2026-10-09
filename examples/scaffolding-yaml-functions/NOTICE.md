@@ -6,3 +6,5 @@ This project is licensed under **{{ (index .Config.license_lookup .Config.licens
 See: {{ (index .Config.license_lookup .Config.license).url }}
 
 Generated from branch `{{ .Config.generated_from_branch }}` by {{ .Config.maintainer }}.
+
+See `SIZING.md` for this project's per-region sizing plan.

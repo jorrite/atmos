@@ -1042,6 +1042,11 @@ func (ui *InitUI) loadScaffoldConfigFromEmbeds(embedsConfig *tmpl.Configuration)
 		return nil, fmt.Errorf("failed to load scaffold configuration: %w", err)
 	}
 
+	// Anchors a local !include.template source's relative-path resolution
+	// the same way config.WithSourceDir above anchors !include -- see
+	// engine.Processor.SetSourceDir.
+	ui.processor.SetSourceDir(embedsConfig.IncludeSourceDir())
+
 	return scaffoldConfig, nil
 }
 
@@ -1181,7 +1186,7 @@ func (ui *InitUI) RunSetupForm(scaffoldConfig *config.ScaffoldConfig, targetPath
 	// so a computed field's expression always sees fully-validated answers,
 	// and before the summary below, so a computed field's value is visible
 	// in it like any other field's.
-	if err := config.ComputeFields(scaffoldConfig, mergedValues, ui.processor.RenderAnswersExpression); err != nil {
+	if err := config.ComputeFields(scaffoldConfig, mergedValues, ui.processor.RenderAnswersExpression, ui.processor.RenderExternalTemplate); err != nil {
 		return nil, nil, fmt.Errorf("failed to compute derived fields: %w", err)
 	}
 
@@ -1736,6 +1741,7 @@ func (ui *InitUI) executeWithSetup(embedsConfig *tmpl.Configuration, targetPath 
 		}
 		return fmt.Errorf("failed to load scaffold configuration: %w", err)
 	}
+	ui.processor.SetSourceDir(embedsConfig.IncludeSourceDir())
 
 	// Run the setup form to collect configuration values.
 	mergedValues, _, err := ui.RunSetupForm(scaffoldConfig, targetPath, useDefaults, cmdTemplateValues)

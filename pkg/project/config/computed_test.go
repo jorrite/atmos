@@ -35,7 +35,7 @@ func TestComputeFields_WritesValueIntoValues(t *testing.T) {
 	values := map[string]interface{}{"regions": []string{"us-east-1"}}
 	render := fakeComputedRenderer(t, map[string]any{"{{ answers.regions }}": "us-east-1"})
 
-	err := ComputeFields(cfg, values, render)
+	err := ComputeFields(cfg, values, render, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "us-east-1", values["primary_region"])
 }
@@ -59,7 +59,7 @@ func TestComputeFields_LaterComputedFieldSeesEarlierResult(t *testing.T) {
 		return "second-value", nil
 	})
 
-	err := ComputeFields(cfg, values, render)
+	err := ComputeFields(cfg, values, render, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "first-value", secondSawFirst)
 	assert.Equal(t, "second-value", values["second_computed"])
@@ -81,7 +81,7 @@ func TestComputeFields_LiteralValue(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called for a literal (non-string) Value")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, []any{"eastasia", "westeurope"}, values["regions_list"])
 	assert.Equal(t, 3, values["retry_count"])
@@ -97,7 +97,7 @@ func TestComputeFields_SkipsNonComputedFields(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called for a non-computed field")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "unchanged", values["regular"])
 }
@@ -114,7 +114,7 @@ func TestComputeFields_SkipsWhenFalse(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called when When evaluates false")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	_, exists := values["hidden_computed"]
 	assert.False(t, exists)
@@ -136,7 +136,7 @@ func TestComputeFields_SkipsWhenFalse_DeletesStaleValue(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called when When evaluates false")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	_, exists := values["hidden_computed"]
 	assert.False(t, exists)
@@ -155,7 +155,7 @@ func TestComputeFields_PlainStringLiteral(t *testing.T) {
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		t.Fatal("render must not be called for a plain string with no template action")
 		return nil, nil
-	})
+	}, nil)
 	require.NoError(t, err)
 	assert.Equal(t, "hello", values["greeting"])
 }
@@ -169,7 +169,7 @@ func TestComputeFields_RenderErrorPropagates(t *testing.T) {
 
 	err := ComputeFields(cfg, values, func(string, map[string]interface{}, []string) (any, error) {
 		return nil, renderErr
-	})
+	}, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, renderErr)
 }
@@ -179,9 +179,197 @@ func TestComputeFields_NilRendererErrors(t *testing.T) {
 		{Name: "broken_computed", Type: fieldTypeComputed, Value: "{{ expr }}"},
 	}}}
 
-	err := ComputeFields(cfg, map[string]interface{}{}, nil)
+	err := ComputeFields(cfg, map[string]interface{}{}, nil, nil)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, errUtils.ErrScaffoldComputedFieldInvalid)
+}
+
+// fakeExternalTemplateRenderer builds an ExternalTemplateRenderer test
+// double recording every (source, data) call it receives, so tests can
+// assert on exactly what ComputeFields resolved and fed it without
+// depending on engine.Processor.RenderExternalTemplate's real fetch/parse/
+// execute mechanics.
+func fakeExternalTemplateRenderer(t *testing.T, result any) (ExternalTemplateRenderer, *[]struct {
+	Source string
+	Data   any
+},
+) {
+	t.Helper()
+	var calls []struct {
+		Source string
+		Data   any
+	}
+	renderer := func(source string, data any) (any, error) {
+		calls = append(calls, struct {
+			Source string
+			Data   any
+		}{Source: source, Data: data})
+		return result, nil
+	}
+	return renderer, &calls
+}
+
+// TestComputeFields_IncludeTemplateDefaultsToFullAnswersMap proves a bare
+// !include.template <source> (no data expression) feeds the external
+// template renderer the full answers map, exactly like a regular scaffold
+// file template's own ambient data.
+func TestComputeFields_IncludeTemplateDefaultsToFullAnswersMap(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "sizing", Type: fieldTypeComputed, Value: "!include.template ./lib/sizing.json.tmpl"},
+	}}}
+	values := map[string]interface{}{"regions": []string{"us-east-1"}}
+	renderTemplate, calls := fakeExternalTemplateRenderer(t, map[string]any{"ok": true})
+
+	err := ComputeFields(cfg, values, nil, renderTemplate)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"ok": true}, values["sizing"])
+	require.Len(t, *calls, 1)
+	assert.Equal(t, "./lib/sizing.json.tmpl", (*calls)[0].Source)
+	assert.Equal(t, values["regions"], (*calls)[0].Data.(map[string]interface{})["regions"])
+}
+
+// TestComputeFields_IncludeTemplateBareDotPathData proves a bare
+// "answers.<path>" data expression resolves against answers and is fed to
+// the renderer as-is -- including when it resolves to a list, not a map.
+func TestComputeFields_IncludeTemplateBareDotPathData(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "sizing", Type: fieldTypeComputed, Value: "!include.template ./lib/sizing.json.tmpl answers.regions"},
+	}}}
+	values := map[string]interface{}{"regions": []string{"us-east-1", "us-west-2"}}
+	renderTemplate, calls := fakeExternalTemplateRenderer(t, "rendered")
+
+	err := ComputeFields(cfg, values, nil, renderTemplate)
+	require.NoError(t, err)
+	assert.Equal(t, "rendered", values["sizing"])
+	require.Len(t, *calls, 1)
+	assert.Equal(t, []string{"us-east-1", "us-west-2"}, (*calls)[0].Data)
+}
+
+// TestComputeFields_IncludeTemplateDelimitedExpressionData proves a
+// delimited Go-template data expression is rendered via the
+// ComputedFieldRenderer (the same one ordinary computed value: expressions
+// use) and its result fed to the external template.
+func TestComputeFields_IncludeTemplateDelimitedExpressionData(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{
+			Name:  "sizing",
+			Type:  fieldTypeComputed,
+			Value: `!include.template ./lib/sizing.json.tmpl {{ dict "regions" answers.regions }}`,
+		},
+	}}}
+	values := map[string]interface{}{"regions": []string{"us-east-1"}}
+	render := fakeComputedRenderer(t, map[string]any{
+		`{{ dict "regions" answers.regions }}`: map[string]any{"regions": []string{"us-east-1"}},
+	})
+	renderTemplate, calls := fakeExternalTemplateRenderer(t, "rendered")
+
+	err := ComputeFields(cfg, values, render, renderTemplate)
+	require.NoError(t, err)
+	assert.Equal(t, "rendered", values["sizing"])
+	require.Len(t, *calls, 1)
+	assert.Equal(t, map[string]any{"regions": []string{"us-east-1"}}, (*calls)[0].Data)
+}
+
+// TestComputeFields_IncludeTemplateNilRendererErrors proves a nil
+// ExternalTemplateRenderer is a clear error, not a nil-pointer panic.
+func TestComputeFields_IncludeTemplateNilRendererErrors(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "sizing", Type: fieldTypeComputed, Value: "!include.template ./lib/sizing.json.tmpl"},
+	}}}
+
+	err := ComputeFields(cfg, map[string]interface{}{}, nil, nil)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, errUtils.ErrScaffoldComputedFieldInvalid)
+}
+
+// TestComputeFields_IncludeTemplateRendererErrorPropagates proves a real
+// renderer error (a fetch/parse/execute/decode failure) propagates out of
+// ComputeFields with the field name attached, not swallowed.
+func TestComputeFields_IncludeTemplateRendererErrorPropagates(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "sizing", Type: fieldTypeComputed, Value: "!include.template ./lib/sizing.json.tmpl"},
+	}}}
+	renderErr := errors.New("boom")
+	renderTemplate := func(string, any) (any, error) { return nil, renderErr }
+
+	err := ComputeFields(cfg, map[string]interface{}{}, nil, renderTemplate)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, renderErr)
+}
+
+// TestComputeFields_IncludeTemplateParseErrorPropagates proves a malformed
+// !include.template argument string (parser.ParseIncludeTemplate rejects
+// it) surfaces as a real error instead of silently resolving to a nil
+// source.
+func TestComputeFields_IncludeTemplateParseErrorPropagates(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "sizing", Type: fieldTypeComputed, Value: "!include.template"},
+	}}}
+	renderTemplate, _ := fakeExternalTemplateRenderer(t, "unused")
+
+	err := ComputeFields(cfg, map[string]interface{}{}, nil, renderTemplate)
+	require.Error(t, err)
+}
+
+// TestComputeFields_IncludeTemplateDataExpressionMissingAnswer proves a
+// bare data-expression dot-path that doesn't resolve against answers (an
+// undeclared name, or a path through a non-map) surfaces as a real error
+// rather than silently feeding the renderer a nil.
+func TestComputeFields_IncludeTemplateDataExpressionMissingAnswer(t *testing.T) {
+	cfg := &ScaffoldConfig{Spec: ScaffoldSpec{Fields: []FieldDefinition{
+		{Name: "sizing", Type: fieldTypeComputed, Value: "!include.template ./lib/sizing.json.tmpl answers.does_not_exist"},
+	}}}
+	renderTemplate, _ := fakeExternalTemplateRenderer(t, "unused")
+
+	err := ComputeFields(cfg, map[string]interface{}{}, nil, renderTemplate)
+	require.Error(t, err)
+}
+
+// TestCutIncludeTemplateTag proves the deferred-tag prefix match handles
+// both the bare tag (no argument at all) and the normal "<tag> <args>"
+// shape, and rejects everything else, including an ordinary computed
+// expression and a different tag name entirely.
+func TestCutIncludeTemplateTag(t *testing.T) {
+	rawArgs, ok := cutIncludeTemplateTag("!include.template")
+	assert.True(t, ok)
+	assert.Empty(t, rawArgs)
+
+	rawArgs, ok = cutIncludeTemplateTag("!include.template ./lib/sizing.json.tmpl answers.regions")
+	assert.True(t, ok)
+	assert.Equal(t, "./lib/sizing.json.tmpl answers.regions", rawArgs)
+
+	_, ok = cutIncludeTemplateTag("{{ answers.regions }}")
+	assert.False(t, ok)
+
+	_, ok = cutIncludeTemplateTag("!include ./lib/sizing.json.tmpl")
+	assert.False(t, ok)
+}
+
+// TestResolveAnswersDotPath proves the bare dot-path walk resolves a
+// nested path, rejects a path through a non-map, rejects a missing key,
+// and rejects a value with no "answers." prefix at all.
+func TestResolveAnswersDotPath(t *testing.T) {
+	answers := map[string]interface{}{
+		"regions": []string{"us-east-1"},
+		"nested":  map[string]interface{}{"inner": "value"},
+	}
+
+	value, err := resolveAnswersDotPath("answers.regions", answers)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"us-east-1"}, value)
+
+	value, err = resolveAnswersDotPath("answers.nested.inner", answers)
+	require.NoError(t, err)
+	assert.Equal(t, "value", value)
+
+	_, err = resolveAnswersDotPath("answers.regions.inner", answers)
+	require.Error(t, err)
+
+	_, err = resolveAnswersDotPath("answers.missing", answers)
+	require.Error(t, err)
+
+	_, err = resolveAnswersDotPath("not-answers.regions", answers)
+	require.Error(t, err)
 }
 
 func TestRejectComputedFieldOverrides(t *testing.T) {

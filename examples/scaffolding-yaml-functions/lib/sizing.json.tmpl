@@ -1,0 +1,11 @@
+{
+  "regions": [
+    {{- range $i, $region := . }}
+    {{- if $i }},{{ end }}
+    {
+      "name": {{ $region | quote }},
+      "instance_size": {{ if eq $region "us-east-1" }}"large"{{ else }}"medium"{{ end }}
+    }
+    {{- end }}
+  ]
+}

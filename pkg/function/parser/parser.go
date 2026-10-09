@@ -51,6 +51,13 @@ type IncludeArgs struct {
 	Query string
 }
 
+// IncludeTemplateArgs contains an external template source and its optional
+// data expression.
+type IncludeTemplateArgs struct {
+	Source   string
+	DataExpr string
+}
+
 // StoreArgs contains the parsed !store arguments.
 type StoreArgs struct {
 	Store     string
@@ -294,6 +301,38 @@ func ParseInclude(input string) (IncludeArgs, error) {
 	args := IncludeArgs{Path: unquote(tokens[0].value)}
 	if len(tokens) > 1 {
 		args.Query = unquote(rawFrom(input, tokens[1]))
+	}
+	return args, nil
+}
+
+// ParseIncludeTemplate parses `source [data-expr]`. Source is a single
+// token (a local path or a remote git::/oci://https:// reference, quoted if
+// it contains whitespace); data-expr, when present, is everything else in
+// the input taken raw from that point to the end -- not a second bound
+// token -- so it can be either a bare dot-path (answers.regions) or a full
+// Go-template expression containing spaces, nested quotes, and its own
+// legitimate pipes (e.g. {{ .foo | default "x" }}), unquoted or wrapped in
+// an outer quote pair. Deliberately has no pipe-clause grammar (unlike
+// !store/!secret's `| default`/`| query`): a data expression commonly
+// contains its own `|` (a Sprig pipe function, or a yq-style filter), which
+// would collide with and corrupt a shared keyword-clause parser the same
+// way !include's own query argument (also often pipe-containing) avoids
+// that grammar entirely rather than risk the same collision.
+func ParseIncludeTemplate(input string) (IncludeTemplateArgs, error) {
+	tokens, err := tokenize(input)
+	if err != nil {
+		return IncludeTemplateArgs{}, err
+	}
+	if len(tokens) == 0 {
+		return IncludeTemplateArgs{}, emptyError()
+	}
+
+	args := IncludeTemplateArgs{Source: unquote(tokens[0].value)}
+	if args.Source == "" {
+		return IncludeTemplateArgs{}, parseError(tokens[0], "template source must not be empty")
+	}
+	if len(tokens) > 1 {
+		args.DataExpr = unquote(rawFrom(input, tokens[1]))
 	}
 	return args, nil
 }

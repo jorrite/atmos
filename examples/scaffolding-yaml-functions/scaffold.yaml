@@ -5,6 +5,13 @@ metadata:
   description: "Load shared reference data via !include and other YAML functions like !env and !git.branch"
 spec:
   fields:
+    - name: regions
+      label: Regions
+      description: Regions this project deploys to, used to derive the sizing plan below.
+      type: multiselect
+      options: [us-east-1, us-west-2, eu-west-1]
+      default: [us-east-1]
+
     - name: license
       label: License
       description: >-
@@ -35,9 +42,19 @@ spec:
         it isn't set.
       value: !env ATMOS_EXAMPLE_MAINTAINER "the project team"
 
+    - name: sizing
+      type: computed
+      description: >-
+        Renders lib/sizing.json.tmpl via !include.template, fed the
+        selected regions as its data, deriving a per-region sizing plan
+        once instead of every file re-implementing the same rule.
+      value: !include.template ./lib/sizing.json.tmpl answers.regions
+
   files:
-    # lib/licenses.yaml only exists to be included above -- it's
-    # automatically excluded from generated output, so only NOTICE.md
-    # actually gets generated.
+    # lib/licenses.yaml and lib/sizing.json.tmpl only exist to be included
+    # above -- both are automatically excluded from generated output, so
+    # only NOTICE.md and SIZING.md actually get generated.
     - path: lib/licenses.yaml
+    - path: lib/sizing.json.tmpl
     - path: NOTICE.md
+    - path: SIZING.md

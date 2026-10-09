@@ -13,6 +13,7 @@ import (
 	"github.com/hairyhenderson/gomplate/v3/data"
 
 	errUtils "github.com/cloudposse/atmos/errors"
+	"github.com/cloudposse/atmos/pkg/downloader"
 	"github.com/cloudposse/atmos/pkg/filesystem"
 	"github.com/cloudposse/atmos/pkg/generator/merge"
 	"github.com/cloudposse/atmos/pkg/generator/storage"
@@ -125,6 +126,15 @@ type Processor struct {
 	// recreates a file the user deleted instead of leaving the deletion in
 	// place. False (the default) preserves the deletion. See SetRecreateDeleted.
 	recreateDeleted bool
+	// sourceDir anchors a local !include.template source's relative-path
+	// resolution, set via SetSourceDir -- the same "relative to the
+	// template, not the process's CWD" convention config.WithSourceDir
+	// already establishes for !include. See external_template.go.
+	sourceDir string
+	// fileDownloader fetches a remote !include.template source (git::/
+	// oci://https:// etc., the same forms !include accepts). Built lazily
+	// on first use since most processors never fetch one.
+	fileDownloader downloader.FileDownloader
 }
 
 // NewProcessor creates a new template processor with default settings.

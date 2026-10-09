@@ -908,6 +908,7 @@ func TestFntagPackage_ContainsAllSupportedYamlTags(t *testing.T) {
 	expectedTags := append([]string{
 		AtmosYamlFuncInclude,
 		AtmosYamlFuncIncludeRaw,
+		AtmosYamlFuncIncludeTemplate,
 	}, AtmosYamlTags...)
 
 	allTags := fntag.AllYAML()

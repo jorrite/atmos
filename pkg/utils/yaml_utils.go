@@ -32,6 +32,7 @@ const (
 	AtmosYamlFuncCEL                     = "!cel"
 	AtmosYamlFuncInclude                 = "!include"
 	AtmosYamlFuncIncludeRaw              = "!include.raw"
+	AtmosYamlFuncIncludeTemplate         = "!include.template"
 	AtmosYamlFuncGitRoot                 = atmosGit.YAMLFuncRepoRoot
 	AtmosYamlFuncGitRootAlias            = atmosGit.YAMLFuncRoot
 	AtmosYamlFuncGitSha                  = atmosGit.YAMLFuncSHA

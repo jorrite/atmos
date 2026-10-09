@@ -184,6 +184,20 @@ func handleIncludeRawTag(ctx TagContext, node *yaml.Node, val string) (bool, err
 	return false, ProcessIncludeRawTag(ctx.AtmosConfig, node, val, ctx.File)
 }
 
+// handleDeferredTag rewrites node into a plain "<tag> <value>" string with
+// no tag, the same way the stack-manifest policy's own Defer:true fallback
+// (see dispatchTag) treats any unhandled-but-valid tag -- used for a
+// scaffold tag that IS recognized here but needs data no phase at this
+// point in the pipeline has (e.g. !include.template needs scaffold answers,
+// which only exist once config.ComputeFields runs, well after this walk).
+// The caller recovers the tag and its raw argument later by checking the
+// decoded string's prefix (see config.ComputeFields' own dispatch).
+func handleDeferredTag(_ TagContext, node *yaml.Node, _ string) (bool, error) {
+	node.Value = getValueWithTag(node)
+	node.Tag = ""
+	return false, nil
+}
+
 // simpleTagHandler adapts a leaf function shaped like
 // pkg/config/process_yaml.go's handle* functions -- given the full
 // "<tag> <value>" string (see getValueWithTag), it returns the resolved
@@ -223,14 +237,20 @@ func simpleTagHandler(resolve func(fullTagValue string) (any, error)) TagHandler
 // configured template run code merely by being listed.
 //
 // The onInclude callback, when non-nil, is invoked with each
-// !include/!include.raw tag's raw path argument as encountered, before
-// resolution -- see pkg/manifest.WithIncludeResolution's doc comment for why
-// a caller wants this.
+// !include/!include.raw/!include.template tag's raw argument string as
+// encountered, before resolution -- see pkg/manifest.WithIncludeResolution's
+// doc comment for why a caller wants this. For !include.template specifically,
+// this only records its raw "<source> [data-expr]" argument string (parsed
+// the same way an !include path is, taking just the first token) -- a local
+// source file, like a local !include target, exists solely to be rendered
+// and must not be copied into generated output, even though the tag itself
+// isn't resolved until config.ComputeFields runs, well after this walk.
 func ScaffoldTagPolicy(onInclude func(path string)) TagWalkPolicy {
 	defer perf.Track(nil, "utils.ScaffoldTagPolicy")()
 
 	includeHandler := handleIncludeTag
 	includeRawHandler := handleIncludeRawTag
+	includeTemplateHandler := handleDeferredTag
 	if onInclude != nil {
 		includeHandler = func(ctx TagContext, node *yaml.Node, val string) (bool, error) {
 			onInclude(val)
@@ -240,26 +260,31 @@ func ScaffoldTagPolicy(onInclude func(path string)) TagWalkPolicy {
 			onInclude(val)
 			return handleIncludeRawTag(ctx, node, val)
 		}
+		includeTemplateHandler = func(ctx TagContext, node *yaml.Node, val string) (bool, error) {
+			onInclude(val)
+			return handleDeferredTag(ctx, node, val)
+		}
 	}
 
 	return TagWalkPolicy{
 		Handlers: map[string]TagHandler{
-			AtmosYamlFuncInclude:       includeHandler,
-			AtmosYamlFuncIncludeRaw:    includeRawHandler,
-			AtmosYamlFuncLiteral:       handleLiteralTag,
-			AtmosYamlFuncEnv:           simpleTagHandler(func(s string) (any, error) { return ProcessTagEnv(s, nil) }),
-			AtmosYamlFuncRandom:        simpleTagHandler(func(s string) (any, error) { return ProcessTagRandom(s) }),
-			AtmosYamlFuncCwd:           simpleTagHandler(func(s string) (any, error) { return ProcessTagCwd(s) }),
-			AtmosYamlFuncGitRoot:       simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagRoot(s) }),
-			AtmosYamlFuncGitRootAlias:  simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagRoot(s) }),
-			AtmosYamlFuncGitSha:        simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagSHA(s) }),
-			AtmosYamlFuncGitRef:        simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagSHA(s) }),
-			AtmosYamlFuncGitBranch:     simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagBranch(s) }),
-			AtmosYamlFuncGitRepository: simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagRepository(s) }),
-			AtmosYamlFuncGitOwner:      simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagOwner(s) }),
-			AtmosYamlFuncGitName:       simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagName(s) }),
-			AtmosYamlFuncGitHost:       simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagHost(s) }),
-			AtmosYamlFuncGitUrl:        simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagURL(s) }),
+			AtmosYamlFuncInclude:         includeHandler,
+			AtmosYamlFuncIncludeRaw:      includeRawHandler,
+			AtmosYamlFuncIncludeTemplate: includeTemplateHandler,
+			AtmosYamlFuncLiteral:         handleLiteralTag,
+			AtmosYamlFuncEnv:             simpleTagHandler(func(s string) (any, error) { return ProcessTagEnv(s, nil) }),
+			AtmosYamlFuncRandom:          simpleTagHandler(func(s string) (any, error) { return ProcessTagRandom(s) }),
+			AtmosYamlFuncCwd:             simpleTagHandler(func(s string) (any, error) { return ProcessTagCwd(s) }),
+			AtmosYamlFuncGitRoot:         simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagRoot(s) }),
+			AtmosYamlFuncGitRootAlias:    simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagRoot(s) }),
+			AtmosYamlFuncGitSha:          simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagSHA(s) }),
+			AtmosYamlFuncGitRef:          simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagSHA(s) }),
+			AtmosYamlFuncGitBranch:       simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagBranch(s) }),
+			AtmosYamlFuncGitRepository:   simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagRepository(s) }),
+			AtmosYamlFuncGitOwner:        simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagOwner(s) }),
+			AtmosYamlFuncGitName:         simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagName(s) }),
+			AtmosYamlFuncGitHost:         simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagHost(s) }),
+			AtmosYamlFuncGitUrl:          simpleTagHandler(func(s string) (any, error) { return atmosGit.ProcessTagURL(s) }),
 		},
 		Defer: false,
 	}
